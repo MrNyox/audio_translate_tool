@@ -1,0 +1,349 @@
+:root {
+  --nexus-bg-base: #030913;
+  --nexus-bg-panel: #0c101a;
+  --nexus-bg-void-blue: #001233;
+  --nexus-bg-input: #1d2941;
+  --nexus-bg-deep-blue: #001845;
+
+  --nexus-border-dim: #2a3a58;
+  --nexus-border-hover: #2a54d1;
+
+  --nexus-accent: #26408a;
+  --nexus-accent-bright: #93a6e4;
+
+  --nexus-success: #10b981;
+  --nexus-danger: #ef4444;
+
+  --nexus-text-steel: #979dac;
+  --nexus-text-grey: #7d8597;
+  --nexus-text-slate: #5c677d;
+  --nexus-text-bright: #e8eaf2;
+
+  --nexus-radius: 3px;
+
+  --nexus-font-ui: "Space Grotesk", sans-serif;
+  --nexus-font-mono: "JetBrains Mono", monospace;
+
+  --nexus-grid-line: rgba(4, 102, 200, 0.05);
+
+  --nexus-shadow-toast: 0 4px 20px rgba(0, 0, 0, 0.4);
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body.nexus-viewport {
+  min-height: 100vh;
+  background: var(--nexus-bg-base);
+  color: var(--nexus-text-steel);
+  font-family: var(--nexus-font-ui);
+  font-size: 14px;
+  line-height: 1.45;
+  position: relative;
+  overflow-x: hidden;
+}
+
+body.nexus-viewport::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(to right, var(--nexus-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--nexus-grid-line) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+body.nexus-viewport::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='nexusNoise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23nexusNoise)' opacity='0.025'/%3E%3C/svg%3E");
+}
+
+.nexus-wrapper {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.nexus-panel {
+  position: relative;
+  border: 1px solid var(--nexus-border-dim);
+  border-radius: var(--nexus-radius);
+  background: linear-gradient(
+    135deg,
+    var(--nexus-bg-panel) 0%,
+    var(--nexus-bg-void-blue) 100%
+  );
+  padding: 1rem;
+  overflow: hidden;
+}
+
+.nexus-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    135deg,
+    rgba(4, 102, 200, 0.04) 0%,
+    transparent 60%
+  );
+}
+
+.nexus-panel--accented::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--nexus-border-hover) 50%,
+    transparent 100%
+  );
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.nexus-label {
+  display: block;
+  margin: 0 0 0.75rem;
+  color: var(--nexus-text-grey);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.nexus-label--compact {
+  margin-bottom: 0.35rem;
+  font-size: 9px;
+}
+
+.nexus-input,
+.nexus-select,
+.nexus-textarea {
+  width: 100%;
+  min-height: 40px;
+  padding: 0.625rem;
+  border: 1px solid var(--nexus-border-dim);
+  border-radius: var(--nexus-radius);
+  background: var(--nexus-bg-input);
+  color: var(--nexus-text-bright);
+  font-family: var(--nexus-font-ui);
+  font-size: 13px;
+  transition: border-color 0.18s ease;
+}
+
+.nexus-input::placeholder,
+.nexus-textarea::placeholder {
+  color: var(--nexus-text-slate);
+}
+
+.nexus-input:hover:not(:disabled),
+.nexus-select:hover:not(:disabled),
+.nexus-textarea:hover:not(:disabled) {
+  border-color: var(--nexus-border-hover);
+}
+
+.nexus-input:focus-visible,
+.nexus-select:focus-visible,
+.nexus-textarea:focus-visible,
+.nexus-btn:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--nexus-accent-bright);
+  outline-offset: 1px;
+  border-color: var(--nexus-border-hover);
+}
+
+.nexus-input:disabled,
+.nexus-select:disabled,
+.nexus-textarea:disabled,
+.nexus-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.nexus-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 40px;
+  padding: 0.55rem 0.95rem;
+  border: 1px solid var(--nexus-border-dim);
+  border-radius: var(--nexus-radius);
+  background: var(--nexus-bg-input);
+  color: var(--nexus-text-steel);
+  font-family: var(--nexus-font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    color 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.nexus-btn:hover:not(:disabled) {
+  border-color: var(--nexus-border-hover);
+  color: var(--nexus-text-bright);
+}
+
+.nexus-btn-primary {
+  min-height: 48px;
+  padding: 0.8rem 1.6rem;
+  border-color: var(--nexus-accent);
+  background: linear-gradient(
+    135deg,
+    var(--nexus-accent) 0%,
+    var(--nexus-bg-deep-blue) 100%
+  );
+  color: var(--nexus-text-bright);
+  letter-spacing: 0.2em;
+  overflow: hidden;
+}
+
+.nexus-btn-primary::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -40%;
+  width: 20%;
+  transform: skewX(-20deg);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.14),
+    transparent
+  );
+  opacity: 0;
+  transition:
+    left 0.35s ease,
+    opacity 0.35s ease;
+  pointer-events: none;
+}
+
+.nexus-btn-primary:hover:not(:disabled)::after {
+  left: 120%;
+  opacity: 1;
+}
+
+.nexus-btn-ghost {
+  min-height: 36px;
+  padding: 0.5rem 0.75rem;
+  background: transparent;
+  color: var(--nexus-text-grey);
+  font-family: var(--nexus-font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: none;
+}
+
+.nexus-progress-track {
+  width: 100%;
+  height: 12px;
+  border: 1px solid var(--nexus-border-dim);
+  border-radius: var(--nexus-radius);
+  background: var(--nexus-bg-deep-blue);
+  overflow: hidden;
+}
+
+.nexus-progress-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    var(--nexus-accent) 0%,
+    var(--nexus-accent-bright) 100%
+  );
+  transition: width 0.25s ease-in-out;
+}
+
+.nexus-status-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--nexus-radius);
+  background: var(--nexus-danger);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.35);
+}
+
+.nexus-status-dot--online {
+  background: var(--nexus-success);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.35);
+}
+
+.nexus-telemetry-text {
+  color: var(--nexus-text-slate);
+  font-family: var(--nexus-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.nexus-toast-stack {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 9000;
+  display: grid;
+  gap: 0.5rem;
+  width: min(380px, calc(100vw - 2rem));
+}
+
+.nexus-toast {
+  border: 1px solid var(--nexus-border-dim);
+  border-radius: var(--nexus-radius);
+  background: linear-gradient(
+    135deg,
+    var(--nexus-bg-panel) 0%,
+    var(--nexus-bg-void-blue) 100%
+  );
+  box-shadow: var(--nexus-shadow-toast);
+  color: var(--nexus-text-steel);
+  padding: 0.7rem 0.8rem;
+  font-size: 12px;
+}
+
+.nexus-toast--info {
+  border-color: var(--nexus-border-dim);
+}
+
+.nexus-toast--success {
+  border-color: rgba(16, 185, 129, 0.5);
+}
+
+.nexus-toast--danger {
+  border-color: rgba(239, 68, 68, 0.55);
+}
+
+html [hidden] {
+  display: none;
+}

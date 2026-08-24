@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stage One</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <link rel="stylesheet" href="/static/css/nexus-core.css" />
+    <link rel="stylesheet" href="/static/css/nexus-ui.css" />
+  </head>
+
+  <body class="nexus-viewport">
+    <div class="nexus-wrapper nexus-app-padding">
+      <header class="nexus-panel nexus-panel--accented nexus-titlebar">
+        <div class="nexus-titlebar-row">
+          <div class="nexus-brand">
+            <span class="nexus-brand-symbol" aria-hidden="true">⬡</span>
+            <span>Stage One</span>
+            <span class="nexus-telemetry-text">v1.0</span>
+          </div>
+
+          <div class="nexus-titlebar-status">
+            <span class="nexus-status-dot" id="statusDot"></span>
+            <span class="nexus-telemetry-text" id="statusLabel">Offline</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="stage-workspace" id="workspaceGrid">
+        <section class="nexus-panel stage-panel" aria-labelledby="uploadHeading">
+          <span class="nexus-label" id="uploadHeading">◈ Media Intake</span>
+
+          <div class="stage-field">
+            <label class="nexus-label nexus-label--compact" for="fileInput">
+              Media file
+            </label>
+
+            <input
+              id="fileInput"
+              class="nexus-input stage-file-input"
+              type="file"
+              accept=".mp3,.wav,.m4a,.flac,.ogg,.mp4,.mkv,.mov,.webm,.avi,audio/*,video/*"
+              aria-describedby="fileHint fileMeta"
+            />
+
+            <p class="nexus-telemetry-text stage-file-meta" id="fileMeta">
+              No file selected.
+            </p>
+
+            <p class="nexus-telemetry-text stage-file-hint" id="fileHint">
+              Accepted: mp3, wav, m4a, flac, ogg, mp4, mkv, mov, webm, avi.
+            </p>
+          </div>
+
+          <div class="stage-actions">
+            <button
+              type="button"
+              class="nexus-btn nexus-btn-primary"
+              id="btnProcess"
+            >
+              ⚡ Process Media ⚡
+            </button>
+          </div>
+        </section>
+
+        <section class="nexus-panel stage-panel" aria-labelledby="progressHeading">
+          <span class="nexus-label" id="progressHeading">◈ Pipeline Telemetry</span>
+
+          <div class="stage-meta">
+            <div class="stage-meta-row">
+              <span class="stage-meta-key">Job</span>
+              <span id="jobIdLabel" class="nexus-telemetry-text">—</span>
+            </div>
+
+            <div class="stage-meta-row">
+              <span class="stage-meta-key">Step</span>
+              <span id="stepLabel" class="nexus-telemetry-text" aria-live="polite">
+                Idle
+              </span>
+            </div>
+          </div>
+
+          <div
+            class="nexus-progress-track"
+            id="progressBar"
+            role="progressbar"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+            aria-label="Processing progress"
+          >
+            <div class="nexus-progress-fill" id="progressFill"></div>
+          </div>
+
+          <div class="stage-progress-row">
+            <span id="progressText" class="nexus-telemetry-text">0%</span>
+            <span id="statusMode" class="nexus-telemetry-text">STANDBY</span>
+          </div>
+
+          <p
+            id="errorText"
+            class="stage-error nexus-telemetry-text"
+            role="alert"
+            aria-live="assertive"
+          ></p>
+        </section>
+
+        <section
+          class="nexus-panel stage-panel stage-panel--wide"
+          aria-labelledby="outputsHeading"
+        >
+          <span class="nexus-label" id="outputsHeading">◈ Primary Outputs</span>
+
+          <p class="nexus-telemetry-text" id="outputsEmpty">
+            No completed job yet. Audio and transcript appear here.
+          </p>
+
+          <div class="stage-output-actions" id="outputActions" hidden>
+            <a
+              id="outputAudioBtn"
+              class="nexus-btn nexus-btn-ghost"
+              href="#"
+              download
+              hidden
+            >
+              Download audio
+            </a>
+
+            <a
+              id="outputTranscriptBtn"
+              class="nexus-btn nexus-btn-ghost"
+              href="#"
+              download
+              hidden
+            >
+              Download transcript
+            </a>
+
+            <a
+              id="outputVideoBtn"
+              class="nexus-btn nexus-btn-ghost"
+              href="#"
+              download
+              hidden
+            >
+              Download muted video
+            </a>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="nexus-toast-stack" id="toastStack"></div>
+
+    <script type="module" src="/static/js/main.js"></script>
+  </body>
+</html>
