@@ -23,6 +23,17 @@ TORCH_DTYPE = os.getenv("QWEN3_ASR_DTYPE", "auto").lower()
 # Safe ASR audio sample rate. Qwen-family ASR models generally expect 16 kHz.
 ASR_SAMPLE_RATE = int(os.getenv("QWEN3_ASR_SAMPLE_RATE", "16000"))
 
+# Max number of new tokens the model may generate per transcription.
+# Increase this for long-form audio, otherwise transcripts get truncated.
+ASR_MAX_NEW_TOKENS = int(os.getenv("QWEN3_ASR_MAX_NEW_TOKENS", "2048"))
+
+# Batch size cap used by qwen-asr's internal batching. -1 means unlimited.
+ASR_MAX_BATCH_SIZE = int(os.getenv("QWEN3_ASR_MAX_BATCH_SIZE", "1"))
+
+# Force a specific spoken language (e.g. "English", "Chinese"). Leave unset
+# (None) to let Qwen3-ASR auto-detect the language.
+ASR_LANGUAGE = os.getenv("QWEN3_ASR_LANGUAGE") or None
+
 # Upload limits.
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "2048"))
 MAX_CONTENT_LENGTH = MAX_UPLOAD_MB * 1024 * 1024

@@ -6,12 +6,12 @@ import config
 _lock = threading.Lock()
 _inference_lock = threading.Lock()
 
-_pipe = None
+_model = None
 _device = None
 
 
 def is_model_loaded() -> bool:
-    return _pipe is not None
+    return _model is not None
 
 
 def _resolve_device(torch_module):
@@ -19,7 +19,7 @@ def _resolve_device(torch_module):
 
     if requested == "auto":
         if torch_module.cuda.is_available():
-            return "cuda"
+            return "cuda:0"
 
         mps_available = (
             hasattr(torch_module, "backends")
@@ -33,6 +33,9 @@ def _resolve_device(torch_module):
 
     if requested.startswith("cuda") and not torch_module.cuda.is_available():
         return "cpu"
+
+    if requested == "cuda":
+        return "cuda:0"
 
     if requested == "mps":
         mps_available = (
@@ -51,7 +54,7 @@ def _resolve_torch_dtype(torch_module, device: str):
 
     if requested in {"", "auto"}:
         if device.startswith("cuda"):
-            return torch_module.float16
+            return torch_module.bfloat16
         return torch_module.float32
 
     mapping = {
@@ -65,74 +68,55 @@ def _resolve_torch_dtype(torch_module, device: str):
 
     dtype = mapping.get(requested, torch_module.float32)
 
-    # Avoid float16 on CPU unless explicitly forced by the user.
-    if device == "cpu" and requested in {"", "auto"} and dtype == torch_module.float16:
+    # Avoid float16/bfloat16 on CPU unless explicitly forced by the user.
+    if device == "cpu" and requested in {"", "auto"} and dtype != torch_module.float32:
         return torch_module.float32
 
     return dtype
 
 
 def load_model() -> None:
-    global _pipe, _device
+    """Load the Qwen3-ASR model using the official `qwen-asr` package.
+
+    Qwen3-ASR-1.7B uses a custom `qwen3_asr` architecture. It is NOT a
+    standard seq2seq speech model, so it can't be loaded through
+    `AutoModelForSpeechSeq2Seq` + `transformers.pipeline("automatic-speech-recognition", ...)`.
+    It must be loaded through `qwen_asr.Qwen3ASRModel`, which wraps the
+    transformers (or vLLM) backend correctly.
+    See: https://huggingface.co/Qwen/Qwen3-ASR-1.7B
+    """
+    global _model, _device
 
     with _lock:
-        if _pipe is not None:
+        if _model is not None:
             return
 
         try:
             import torch
-            from transformers import (
-                AutoModelForSpeechSeq2Seq,
-                AutoProcessor,
-                pipeline,
-            )
+            from qwen_asr import Qwen3ASRModel
         except Exception as exc:
             raise RuntimeError(
-                "Qwen3-ASR dependencies are missing. Install torch, transformers, and soundfile."
+                "Qwen3-ASR dependencies are missing. Install them with "
+                "`pip install -U qwen-asr torch soundfile`."
             ) from exc
 
         device = _resolve_device(torch)
         torch_dtype = _resolve_torch_dtype(torch, device)
 
         try:
-            model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            model = Qwen3ASRModel.from_pretrained(
                 config.MODEL_ID,
-                torch_dtype=torch_dtype,
-                trust_remote_code=True,
+                dtype=torch_dtype,
+                device_map=device,
+                max_inference_batch_size=config.ASR_MAX_BATCH_SIZE,
+                max_new_tokens=config.ASR_MAX_NEW_TOKENS,
             )
 
-            processor = AutoProcessor.from_pretrained(
-                config.MODEL_ID,
-                trust_remote_code=True,
-            )
-
-            model.to(device)
-            model.eval()
-
-            pipeline_kwargs = {
-                "model": model,
-                "device": device,
-                "torch_dtype": torch_dtype,
-            }
-
-            tokenizer = getattr(processor, "tokenizer", None)
-            feature_extractor = getattr(processor, "feature_extractor", None)
-
-            if tokenizer is not None:
-                pipeline_kwargs["tokenizer"] = tokenizer
-
-            if feature_extractor is not None:
-                pipeline_kwargs["feature_extractor"] = feature_extractor
-
-            _pipe = pipeline(
-                "automatic-speech-recognition",
-                **pipeline_kwargs,
-            )
-
+            _model = model
             _device = device
 
         except Exception as exc:
-            _pipe = None
+            _model = None
             _device = None
             raise RuntimeError(f"Failed to load Qwen3-ASR model: {exc}") from exc
 
@@ -147,14 +131,20 @@ def transcribe_file(audio_path) -> str:
 
     with _inference_lock:
         try:
-            result = _pipe(str(audio_path))
+            results = _model.transcribe(
+                audio=str(audio_path),
+                language=config.ASR_LANGUAGE,
+            )
         except Exception as exc:
             raise RuntimeError(f"Transcription failed: {exc}") from exc
 
-    if isinstance(result, (list, tuple)):
-        result = result[0] if result else {}
+    if not results:
+        return ""
 
-    if isinstance(result, dict):
-        return str(result.get("text") or "").strip()
+    result = results[0]
+    text = getattr(result, "text", None)
 
-    return str(result or "").strip()
+    if text is None and isinstance(result, dict):
+        text = result.get("text")
+
+    return str(text or "").strip()
