@@ -255,9 +255,16 @@ def translate_job(job_id):
     if job.get("status") != "completed":
         return _err("Stage One must be completed before translating.", 400)
 
+    # Enforce the same single-active-job guard used by POST /api/jobs
+    active_job_id = job_store.get_active_job_id()
+    if active_job_id:
+        active_job = job_store.get_job(active_job_id)
+        if active_job and active_job.get("status") in RUNNING_STATUSES:
+            return _err("Another job is already processing. Please wait for it to finish.", 409)
+        job_store.clear_active_job()
+
     data = request.get_json(silent=True) or {}
     target_language = data.get("target_language")
-
     if target_language not in ("Arabic", "English"):
         return _err("Invalid target language.", 400)
 
@@ -265,6 +272,7 @@ def translate_job(job_id):
     if not job_dir or not (job_dir / config.TRANSCRIPT_FILENAME).is_file():
         return _err("Transcript file is missing.", 404)
 
+    job_store.set_active_job(job_id)   # claim the GPU slot before the worker thread starts
     translation_pipeline.start_translation_job(job_id, target_language)
 
     updated_job = job_store.get_job(job_id)

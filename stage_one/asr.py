@@ -2,6 +2,7 @@ import threading
 from pathlib import Path
 import gc
 import config
+import torch
 
 _lock = threading.Lock()
 _inference_lock = threading.Lock()
@@ -19,12 +20,8 @@ def unload() -> None:
         _model = None
         _device = None
     gc.collect()
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except ImportError:
-        pass
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 def _resolve_device(torch_module):
     requested = (config.DEVICE or "auto").lower()
@@ -160,13 +157,3 @@ def transcribe_file(audio_path) -> str:
         text = result.get("text")
 
     return str(text or "").strip()
-# Add to stage_one/asr.py:
-def unload() -> None:
-    """Free the ASR model from memory."""
-    global _model, _device
-    with _lock:
-        _model = None
-        _device = None
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
