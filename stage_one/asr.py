@@ -9,19 +9,28 @@ _inference_lock = threading.Lock()
 
 _model = None
 _device = None
+_aligner_loaded = False
 
 
 def is_model_loaded() -> bool:
     return _model is not None
+
+
+def is_aligner_loaded() -> bool:
+    return _aligner_loaded
+
+
 def unload() -> None:
     """Unload the ASR model and free GPU memory."""
-    global _model, _device
+    global _model, _device, _aligner_loaded
     with _lock:
         _model = None
         _device = None
+        _aligner_loaded = False
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
 
 def _resolve_device(torch_module):
     requested = (config.DEVICE or "auto").lower()
@@ -93,8 +102,14 @@ def load_model() -> None:
     It must be loaded through `qwen_asr.Qwen3ASRModel`, which wraps the
     transformers (or vLLM) backend correctly.
     See: https://huggingface.co/Qwen/Qwen3-ASR-1.7B
+
+    We also try to load `Qwen3-ForcedAligner-0.6B` alongside it so that
+    `.transcribe(..., return_time_stamps=True)` can return word-level
+    timestamps. If the aligner can't be loaded (missing weights, missing
+    package support, OOM, etc.) we retry without it -- plain transcription
+    must keep working even if timestamps aren't available.
     """
-    global _model, _device
+    global _model, _device, _aligner_loaded
 
     with _lock:
         if _model is not None:
@@ -119,41 +134,177 @@ def load_model() -> None:
                 device_map=device,
                 max_inference_batch_size=config.ASR_MAX_BATCH_SIZE,
                 max_new_tokens=config.ASR_MAX_NEW_TOKENS,
+                forced_aligner=config.FORCED_ALIGNER_MODEL_ID,
+                forced_aligner_kwargs=dict(
+                    dtype=torch_dtype,
+                    device_map=device,
+                ),
             )
 
             _model = model
             _device = device
+            _aligner_loaded = True
+            return
 
-        except Exception as exc:
-            _model = None
-            _device = None
-            raise RuntimeError(f"Failed to load Qwen3-ASR model: {exc}") from exc
+        except Exception as aligner_exc:
+            # Fall back to ASR-only so transcription keeps working even if
+            # the forced aligner model isn't available locally / fails to
+            # load. We just won't get ts_transcript.json / ts_translated.json
+            # / subtitles for this run.
+            try:
+                model = Qwen3ASRModel.from_pretrained(
+                    config.MODEL_ID,
+                    dtype=torch_dtype,
+                    device_map=device,
+                    max_inference_batch_size=config.ASR_MAX_BATCH_SIZE,
+                    max_new_tokens=config.ASR_MAX_NEW_TOKENS,
+                )
+
+                _model = model
+                _device = device
+                _aligner_loaded = False
+                return
+
+            except Exception as exc:
+                _model = None
+                _device = None
+                _aligner_loaded = False
+                raise RuntimeError(f"Failed to load Qwen3-ASR model: {exc}") from exc
 
 
-def transcribe_file(audio_path) -> str:
+def _word_field(word, *names, default=None):
+    """Read an attribute/key from a timestamp entry, tolerating either an
+    object with attributes (dataclass-like) or a plain dict, and slightly
+    different field naming across qwen-asr versions."""
+    for name in names:
+        if hasattr(word, name):
+            value = getattr(word, name)
+            if value is not None:
+                return value
+        if isinstance(word, dict) and word.get(name) is not None:
+            return word[name]
+    return default
+
+
+def _group_word_stamps(word_stamps):
+    """Group word-level timestamps into subtitle-sized cues.
+
+    A new cue is started whenever any of the configured thresholds
+    (word count, character count, cue duration, silence gap) is exceeded,
+    or whenever the previous word ends a sentence (., ?, !, ...).
+    """
+    max_words = config.CAPTION_MAX_WORDS
+    max_chars = config.CAPTION_MAX_CHARS
+    max_duration = config.CAPTION_MAX_DURATION
+    max_gap = config.CAPTION_MAX_GAP
+
+    segments = []
+    current = []
+
+    def flush():
+        if not current:
+            return
+        text = " ".join(w["text"] for w in current).strip()
+        if not text:
+            current.clear()
+            return
+        segments.append(
+            {
+                "start": round(current[0]["start"], 3),
+                "end": round(current[-1]["end"], 3),
+                "text": text,
+            }
+        )
+        current.clear()
+
+    for raw_word in word_stamps:
+        text = str(_word_field(raw_word, "text", "word", default="")).strip()
+        if not text:
+            continue
+
+        start = float(_word_field(raw_word, "start_time", "start", default=0.0))
+        end = float(_word_field(raw_word, "end_time", "end", default=start))
+        if end < start:
+            end = start
+
+        if current:
+            gap = start - current[-1]["end"]
+            prev_ends_sentence = current[-1]["text"].endswith((".", "?", "!", "\u2026", "\u061f"))
+            proposed_words = len(current) + 1
+            proposed_chars = len(" ".join(w["text"] for w in current)) + 1 + len(text)
+            proposed_duration = end - current[0]["start"]
+
+            if (
+                prev_ends_sentence
+                or gap > max_gap
+                or proposed_words > max_words
+                or proposed_chars > max_chars
+                or proposed_duration > max_duration
+            ):
+                flush()
+
+        current.append({"text": text, "start": start, "end": end})
+
+    flush()
+    return segments
+
+
+def _run_transcription(audio_path, with_timestamps: bool) -> dict:
     audio_path = Path(audio_path)
 
     if not audio_path.is_file():
         raise RuntimeError("Extracted audio file not found.")
 
     load_model()
+    want_timestamps = with_timestamps and _aligner_loaded
 
     with _inference_lock:
         try:
             results = _model.transcribe(
                 audio=str(audio_path),
                 language=config.ASR_LANGUAGE,
+                return_time_stamps=want_timestamps,
             )
         except Exception as exc:
             raise RuntimeError(f"Transcription failed: {exc}") from exc
 
     if not results:
-        return ""
+        return {"text": "", "segments": []}
 
     result = results[0]
     text = getattr(result, "text", None)
-
     if text is None and isinstance(result, dict):
         text = result.get("text")
+    text = str(text or "").strip()
 
-    return str(text or "").strip()
+    segments = []
+    if want_timestamps:
+        raw_stamps = getattr(result, "time_stamps", None)
+        if raw_stamps is None and isinstance(result, dict):
+            raw_stamps = result.get("time_stamps")
+
+        word_stamps = []
+        if raw_stamps:
+            # `time_stamps` is batched (one list per input audio); we only
+            # ever pass a single audio file in, so take the first entry.
+            word_stamps = raw_stamps[0] if isinstance(raw_stamps, list) else []
+
+        segments = _group_word_stamps(word_stamps)
+
+    return {"text": text, "segments": segments}
+
+
+def transcribe_file(audio_path) -> str:
+    """Original behavior, unchanged: returns the flat transcript text only.
+    Used wherever timestamps aren't needed."""
+    return _run_transcription(audio_path, with_timestamps=False)["text"]
+
+
+def transcribe_file_with_timestamps(audio_path) -> dict:
+    """Returns {"text": str, "segments": [{"start", "end", "text"}, ...]}.
+
+    `segments` will be an empty list if the forced aligner wasn't available
+    at model load time -- callers should treat that as "no timestamps this
+    run" rather than an error.
+    """
+    return _run_transcription(audio_path, with_timestamps=True)

@@ -1,7 +1,7 @@
 """Stage Two: LLM-based translation using unsloth/Qwen2.5-7B-Instruct-bnb-4bit.
 
 This model ships PRE-QUANTIZED (bitsandbytes NF4). Do NOT pass a new
-BitsAndBytesConfig — transformers reads the quantization config from the
+BitsAndBytesConfig -- transformers reads the quantization config from the
 model's own config.json on Hugging Face Hub.
 """
 
@@ -78,62 +78,108 @@ def unload_translation_model():
     _free_vram()
 
 
+_SYSTEM_PROMPT_TEMPLATE = (
+    "You are an expert translator. Translate the following text to {target_language}. "
+    "Output ONLY the translated text. Do not include explanations, notes, or "
+    "conversational filler. Prioritize natural, fluent, and idiomatic phrasing "
+    "in the target language. Preserve the original meaning, tone, and context."
+)
+
+
+def _translate_chunk(text: str, target_language: str) -> str:
+    """Run a single translation generation call.
+
+    Assumes the model/tokenizer are already loaded and the caller holds
+    `_lock`. Shared by both `translate_text` (flat-file path) and
+    `translate_segments` (timestamped path) so both stay in sync with any
+    future prompt/generation tuning.
+    """
+    if not text.strip():
+        return ""
+
+    system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(target_language=target_language)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": text},
+    ]
+
+    input_text = _tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+    inputs = _tokenizer(
+        input_text,
+        return_tensors="pt",
+        truncation=True,
+        max_length=config.TRANSLATION_MAX_TOKENS + 512,  # leave room for generation
+    ).to(_model.device)
+
+    with torch.no_grad():
+        outputs = _model.generate(
+            **inputs,
+            max_new_tokens=config.TRANSLATION_MAX_TOKENS,
+            do_sample=False,  # greedy -- deterministic translation
+            repetition_penalty=1.1,
+        )
+
+    generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    translated = _tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+    del inputs, outputs, generated_tokens
+
+    return translated.strip()
+
+
 def translate_text(text: str, target_language: str) -> str:
-    """Translate text using greedy decoding. Model persists across calls."""
+    """Translate text using greedy decoding. Model persists across calls.
+
+    Unchanged behavior: still chunks by token budget via `_chunk_text` and
+    produces the same flat translated.txt output as before.
+    """
     with _lock:
         load_translation_model()
 
         if not text.strip():
             return ""
 
-        system_prompt = (
-            f"You are an expert translator. Translate the following text to {target_language}. "
-            "Output ONLY the translated text. Do not include explanations, notes, or "
-            "conversational filler. Prioritize natural, fluent, and idiomatic phrasing "
-            "in the target language. Preserve the original meaning, tone, and context."
-        )
-
         chunks = _chunk_text(text, config.TRANSLATION_CHUNK_SIZE)
-        translated_chunks: List[str] = []
-
-        for i, chunk in enumerate(chunks):
-            logger.debug("Translating chunk %d/%d", i + 1, len(chunks))
-
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": chunk},
-            ]
-
-            input_text = _tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-
-            inputs = _tokenizer(
-                input_text,
-                return_tensors="pt",
-                truncation=True,
-                max_length=config.TRANSLATION_MAX_TOKENS + 512,  # leave room for generation
-            ).to(_model.device)
-
-            with torch.no_grad():
-                outputs = _model.generate(
-                    **inputs,
-                    max_new_tokens=config.TRANSLATION_MAX_TOKENS,
-                    do_sample=False,  # greedy — deterministic translation
-                    repetition_penalty=1.1,
-                )
-
-            generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
-            translated_chunk = _tokenizer.decode(
-                generated_tokens, skip_special_tokens=True
-            )
-            translated_chunks.append(translated_chunk.strip())
-
-            del inputs, outputs, generated_tokens
+        translated_chunks: List[str] = [
+            _translate_chunk(chunk, target_language) for chunk in chunks
+        ]
 
         return "\n".join(translated_chunks)
+
+
+def translate_segments(segments: List[dict], target_language: str) -> List[dict]:
+    """Translate a list of {"start", "end", "text"} segments one at a time.
+
+    Unlike `translate_text` (which is free to merge/re-split lines across
+    an arbitrary token-budget chunk), this translates each segment
+    independently so `start`/`end` from ts_transcript.json stay perfectly
+    aligned with the translated text in ts_translated.json -- required for
+    correct subtitle timing.
+    """
+    with _lock:
+        load_translation_model()
+
+        translated_segments: List[dict] = []
+        for seg in segments:
+            source_text = str(seg.get("text", "")).strip()
+            translated_text = (
+                _translate_chunk(source_text, target_language) if source_text else ""
+            )
+            translated_segments.append(
+                {
+                    "start": seg.get("start"),
+                    "end": seg.get("end"),
+                    "text": translated_text,
+                }
+            )
+
+        return translated_segments
 
 
 def _chunk_text(text: str, max_tokens: int) -> List[str]:
