@@ -5,6 +5,8 @@ const state = {
   polling: false,
   lastStatus: null,
   selectedFileName: null,
+  translationStatus: "idle",
+  targetLanguage: "Arabic",
 };
 
 export default state;

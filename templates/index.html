@@ -152,9 +152,35 @@
             >
               Download muted video
             </a>
+
+            <a
+              id="outputTranslatedBtn"
+              class="nexus-btn nexus-btn-ghost"
+              href="#"
+              download
+              hidden
+            >
+              Download translated text
+            </a>
           </div>
         </section>
       </main>
+
+      <!-- Stage Two Translation Panel -->
+      <section class="nexus-panel nexus-sidebar-section" id="stageTwoPanel" hidden>
+        <span class="nexus-label">◈ Stage Two: Translation</span>
+
+        <label class="nexus-label nexus-label--compact" for="selTargetLang">Target Language</label>
+        <select id="selTargetLang" class="nexus-select">
+          <option value="Arabic">Arabic</option>
+          <option value="English">English</option>
+        </select>
+
+        <button type="button" class="nexus-btn nexus-btn-primary" id="btnTranslate" disabled>
+          ⚡ Translate Transcript ⚡
+        </button>
+        <link rel="stylesheet" href="/static/css/nexus-core.css" />
+      </section>
     </div>
 
     <div class="nexus-toast-stack" id="toastStack"></div>

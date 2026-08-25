@@ -19,6 +19,10 @@ const ELEMENT_IDS = [
   "outputTranscriptBtn",
   "outputVideoBtn",
   "toastStack",
+  "stageTwoPanel",
+  "selTargetLang",
+  "btnTranslate",
+  "outputTranslatedBtn",
 ];
 
 export function cacheElements() {
@@ -141,7 +145,8 @@ export function showOutputs(outputs) {
   const hasAudio = Boolean(safeOutputs.audio_url);
   const hasTranscript = Boolean(safeOutputs.transcript_url);
   const hasVideo = Boolean(safeOutputs.video_url);
-  const hasAny = hasAudio || hasTranscript || hasVideo;
+  const hasTranslated = Boolean(safeOutputs.translated_url);
+  const hasAny = hasAudio || hasTranscript || hasVideo || hasTranslated;
 
   if (els.outputAudioBtn) {
     els.outputAudioBtn.href = safeOutputs.audio_url || "#";
@@ -156,6 +161,11 @@ export function showOutputs(outputs) {
   if (els.outputVideoBtn) {
     els.outputVideoBtn.href = safeOutputs.video_url || "#";
     els.outputVideoBtn.hidden = !hasVideo;
+  }
+
+  if (els.outputTranslatedBtn) {
+    els.outputTranslatedBtn.href = safeOutputs.translated_url || "#";
+    els.outputTranslatedBtn.hidden = !hasTranslated;
   }
 
   if (els.outputsEmpty) {
@@ -196,6 +206,18 @@ export function resetJobView() {
     els.outputVideoBtn.hidden = true;
     els.outputVideoBtn.href = "#";
   }
+
+  if (els.outputTranslatedBtn) {
+    els.outputTranslatedBtn.hidden = true;
+    els.outputTranslatedBtn.href = "#";
+  }
+
+  if (els.stageTwoPanel) {
+    els.stageTwoPanel.hidden = true;
+  }
+  if (els.btnTranslate) {
+    els.btnTranslate.disabled = true;
+  }
 }
 
 export function closeAllModals() {
@@ -207,4 +229,32 @@ export function closeAllModals() {
     backdrop.classList.remove("is-open");
     backdrop.setAttribute("aria-hidden", "true");
   });
+}
+
+export function showStageTwoPanel() {
+  if (els.stageTwoPanel) {
+    els.stageTwoPanel.hidden = false;
+  }
+  if (els.btnTranslate) {
+    els.btnTranslate.disabled = false;
+  }
+}
+
+export function setTranslationProgress(isBusy) {
+  if (els.btnTranslate) {
+    els.btnTranslate.disabled = isBusy;
+    els.btnTranslate.setAttribute("aria-busy", isBusy ? "true" : "false");
+    if (isBusy) {
+      els.btnTranslate.textContent = "Translating...";
+    } else {
+      els.btnTranslate.textContent = "⚡ Translate Transcript ⚡";
+    }
+  }
+}
+
+export function showTranslatedOutput(url) {
+  if (els.outputTranslatedBtn) {
+    els.outputTranslatedBtn.href = url;
+    els.outputTranslatedBtn.hidden = false;
+  }
 }

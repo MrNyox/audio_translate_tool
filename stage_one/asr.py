@@ -1,7 +1,8 @@
 import threading
 from pathlib import Path
-
+import gc
 import config
+import torch
 
 _lock = threading.Lock()
 _inference_lock = threading.Lock()
@@ -12,7 +13,15 @@ _device = None
 
 def is_model_loaded() -> bool:
     return _model is not None
-
+def unload() -> None:
+    """Unload the ASR model and free GPU memory."""
+    global _model, _device
+    with _lock:
+        _model = None
+        _device = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 def _resolve_device(torch_module):
     requested = (config.DEVICE or "auto").lower()
