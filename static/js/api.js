@@ -76,3 +76,14 @@ export function createJob(file) {
 export function getJob(jobId) {
   return request(`/api/jobs/${encodeURIComponent(jobId)}`);
 }
+
+export function triggerTranslation(jobId, targetLanguage) {
+  return request(`/api/jobs/${encodeURIComponent(jobId)}/translate`, {
+    method: "POST",
+    body: JSON.stringify({ target_language: targetLanguage }),
+  });
+}
+
+export function getTranslatedFileUrl(jobId) {
+  return `/api/jobs/${encodeURIComponent(jobId)}/outputs/translated`;
+}

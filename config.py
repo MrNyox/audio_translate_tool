@@ -9,9 +9,10 @@ JOB_OUTPUT_ROOT = Path(
 ).resolve()
 
 # Qwen3-ASR model id or local folder path.
-MODEL_ID = os.getenv(
-    "QWEN3_ASR_MODEL",
-    str(BASE_DIR / "models" / "Qwen3-ASR-1.7B")
+MODEL_ID = (
+    os.getenv("QWEN3_ASR_MODEL")
+    or os.getenv("QWEN3_ASR")  # ← legacy name
+    or str(BASE_DIR / "models" / "Qwen3-ASR-1.7B")
 )
 
 # Device selection: auto, cpu, cuda, cuda:0, mps.
@@ -57,3 +58,11 @@ ASR_AUDIO_FILENAME = "audio.wav"
 TRANSCRIPT_FILENAME = "transcript.txt"
 MUTED_VIDEO_PREFIX = "video_no_audio"
 SOURCE_PREFIX = "source"
+TRANSLATED_FILENAME = "translated.txt"
+
+TRANSLATION_MODEL_ID = os.getenv(
+    "TRANSLATION_MODEL_ID",
+    "unsloth/Qwen2.5-7B-Instruct-bnb-4bit",
+)
+TRANSLATION_MAX_TOKENS = int(os.getenv("TRANSLATION_MAX_TOKENS", "2048"))
+TRANSLATION_CHUNK_SIZE = int(os.getenv("TRANSLATION_CHUNK_SIZE", "4096"))

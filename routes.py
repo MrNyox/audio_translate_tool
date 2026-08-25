@@ -8,6 +8,7 @@ from werkzeug.utils import secure_filename
 
 import config
 from stage_one import asr, job_store, media, pipeline
+from stage_two import pipeline as translation_pipeline
 
 bp = Blueprint("api", __name__)
 
@@ -19,16 +20,14 @@ RUNNING_STATUSES = {
     "splitting_media",
     "transcribing",
     "saving_outputs",
+    "translating",
 }
-
 
 def _ok(data=None, status=200):
     return jsonify({"ok": True, "data": data or {}}), status
 
-
 def _err(message, status=400):
     return jsonify({"ok": False, "error": message}), status
-
 
 def _is_path_inside(base: Path, target: Path) -> bool:
     try:
@@ -40,7 +39,6 @@ def _is_path_inside(base: Path, target: Path) -> bool:
         except ValueError:
             return False
 
-
 def _public_job(job):
     if not job:
         return {}
@@ -51,10 +49,12 @@ def _public_job(job):
 
     def output_url(kind):
         path_value = outputs.get(f"{kind}_path")
-        if status != "completed" or not path_value:
+        if not path_value:
             return None
+
         if not Path(path_value).is_file():
             return None
+
         return f"/api/jobs/{job_id}/outputs/{kind}"
 
     return {
@@ -69,9 +69,9 @@ def _public_job(job):
             "audio_url": output_url("audio"),
             "transcript_url": output_url("transcript"),
             "video_url": output_url("video"),
+            "translated_url": output_url("translated"),
         },
     }
-
 
 def _safe_job_dir(job_id: str):
     if not JOB_ID_RE.fullmatch(job_id):
@@ -87,7 +87,6 @@ def _safe_job_dir(job_id: str):
         return None
 
     return candidate
-
 
 def _send_exact_file(job_id: str, filename: str, mimetype: str = None):
     job_dir = _safe_job_dir(job_id)
@@ -106,7 +105,6 @@ def _send_exact_file(job_id: str, filename: str, mimetype: str = None):
         download_name=path.name,
         mimetype=resolved_mime,
     )
-
 
 def _send_glob_file(job_id: str, prefix: str, mimetype: str = None):
     job_dir = _safe_job_dir(job_id)
@@ -133,7 +131,6 @@ def _send_glob_file(job_id: str, prefix: str, mimetype: str = None):
         mimetype=resolved_mime,
     )
 
-
 @bp.get("/api/health")
 def health():
     return _ok(
@@ -143,7 +140,6 @@ def health():
             "ffmpeg_available": media.ffmpeg_available(),
         }
     )
-
 
 @bp.post("/api/jobs")
 def create_job():
@@ -212,7 +208,6 @@ def create_job():
     job = job_store.get_job(job_id)
     return _ok(_public_job(job), 201)
 
-
 @bp.get("/api/jobs/<job_id>")
 def get_job(job_id):
     if not JOB_ID_RE.fullmatch(job_id):
@@ -224,7 +219,6 @@ def get_job(job_id):
 
     return _ok(_public_job(job))
 
-
 @bp.get("/api/jobs/<job_id>/outputs/audio")
 def download_audio(job_id):
     return _send_exact_file(
@@ -232,7 +226,6 @@ def download_audio(job_id):
         config.ASR_AUDIO_FILENAME,
         mimetype="audio/wav",
     )
-
 
 @bp.get("/api/jobs/<job_id>/outputs/transcript")
 def download_transcript(job_id):
@@ -242,11 +235,45 @@ def download_transcript(job_id):
         mimetype="text/plain; charset=utf-8",
     )
 
-
 @bp.get("/api/jobs/<job_id>/outputs/video")
 def download_video(job_id):
     return _send_glob_file(
         job_id,
         config.MUTED_VIDEO_PREFIX,
         mimetype=None,
+    )
+
+@bp.post("/api/jobs/<job_id>/translate")
+def translate_job(job_id):
+    if not JOB_ID_RE.fullmatch(job_id):
+        return _err("Invalid job ID.", 400)
+
+    job = job_store.get_job(job_id)
+    if not job:
+        return _err("Job not found.", 404)
+
+    if job.get("status") != "completed":
+        return _err("Stage One must be completed before translating.", 400)
+
+    data = request.get_json(silent=True) or {}
+    target_language = data.get("target_language")
+
+    if target_language not in ("Arabic", "English"):
+        return _err("Invalid target language.", 400)
+
+    job_dir = _safe_job_dir(job_id)
+    if not job_dir or not (job_dir / config.TRANSCRIPT_FILENAME).is_file():
+        return _err("Transcript file is missing.", 404)
+
+    translation_pipeline.start_translation_job(job_id, target_language)
+
+    updated_job = job_store.get_job(job_id)
+    return _ok(_public_job(updated_job))
+
+@bp.get("/api/jobs/<job_id>/outputs/translated")
+def download_translated(job_id):
+    return _send_exact_file(
+        job_id,
+        config.TRANSLATED_FILENAME,
+        mimetype="text/plain; charset=utf-8",
     )

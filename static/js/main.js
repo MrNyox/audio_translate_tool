@@ -4,7 +4,11 @@ import {
   initPipeline,
   handleVisibilityChange,
 } from "./components/pipeline.js";
-
+import {
+  initTranslation,
+  handleTranslationVisibilityChange,
+} from "./components/translation.js";
+import { initPipeline, handleVisibilityChange } from "./components/pipeline.js";
 document.addEventListener("DOMContentLoaded", init);
 
 function init() {
@@ -12,6 +16,7 @@ function init() {
   ui.cacheElements();
   ui.resetJobView();
   initPipeline();
+  initTranslation();
   bindGlobalEvents();
 }
 
@@ -22,5 +27,8 @@ function bindGlobalEvents() {
     }
   });
 
-  document.addEventListener("visibilitychange", handleVisibilityChange);
+  document.addEventListener("visibilitychange", () => {
+    handleVisibilityChange();
+    handleTranslationVisibilityChange();
+  });
 }
