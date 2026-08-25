@@ -8,7 +8,7 @@ import {
   initTranslation,
   handleTranslationVisibilityChange,
 } from "./components/translation.js";
-import { initPipeline, handleVisibilityChange } from "./components/pipeline.js";
+
 document.addEventListener("DOMContentLoaded", init);
 
 function init() {

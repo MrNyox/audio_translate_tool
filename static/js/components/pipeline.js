@@ -1,6 +1,7 @@
 import * as api from "../api.js";
 import * as ui from "../ui.js";
 import state, { updateState } from "../state.js";
+import { handleStageOneCompletion } from "./translation.js";
 
 const POLL_MS = 1200;
 
@@ -217,6 +218,9 @@ function completeJob(outputs) {
 
   updateState("busy", false);
   ui.setBusy(false);
+
+  // Reveal the Stage Two (translation) panel now that a transcript exists.
+  handleStageOneCompletion(state.jobId);
 
   ui.toast("Job completed.", "success");
 }
