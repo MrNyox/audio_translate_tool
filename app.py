@@ -1,8 +1,15 @@
+import logging
+
 from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
 import config
 from routes import bp as api_bp
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 
 
 def create_app() -> Flask:

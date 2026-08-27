@@ -1,8 +1,11 @@
+import logging
 import threading
 from pathlib import Path
 import gc
 import config
 import torch
+
+logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _inference_lock = threading.Lock()
@@ -150,7 +153,23 @@ def load_model() -> None:
             # Fall back to ASR-only so transcription keeps working even if
             # the forced aligner model isn't available locally / fails to
             # load. We just won't get ts_transcript.json / ts_translated.json
-            # / subtitles for this run.
+            # / subtitles for this run. Log this LOUDLY (not just a debug
+            # line) -- silently swallowing it made a real load failure look
+            # identical to "aligner intentionally not configured", which is
+            # exactly what caused ts_transcript.json to ship empty with no
+            # visible explanation.
+            logger.error(
+                "Forced aligner failed to load from '%s' -- continuing "
+                "WITHOUT word-level timestamps (ts_transcript.json will be "
+                "empty and subtitle burn-in will be skipped for this run). "
+                "Set QWEN3_FORCED_ALIGNER_MODEL to a valid local path or HF "
+                "Hub repo id, or download the model into "
+                "models/Qwen3-ForcedAligner-0.6B/, to fix this. "
+                "Underlying error: %s",
+                config.FORCED_ALIGNER_MODEL_ID,
+                aligner_exc,
+                exc_info=True,
+            )
             try:
                 model = Qwen3ASRModel.from_pretrained(
                     config.MODEL_ID,

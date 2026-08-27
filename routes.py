@@ -140,6 +140,7 @@ def health():
         {
             "status": "online",
             "model_loaded": asr.is_model_loaded(),
+            "aligner_loaded": asr.is_aligner_loaded(),
             "ffmpeg_available": media.ffmpeg_available(),
         }
     )

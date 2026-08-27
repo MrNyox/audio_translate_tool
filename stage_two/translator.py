@@ -21,6 +21,62 @@ _lock = threading.Lock()
 _model = None
 _tokenizer = None
 
+# --- Language-drift guard --------------------------------------------------
+# The base model (Qwen2.5-7B-Instruct) is heavily EN/ZH-trained. Under
+# greedy decoding it will occasionally code-switch mid-sentence into
+# Chinese even when explicitly asked for Arabic or English -- e.g.
+# "أهلاً各位،我是..." instead of a fully Arabic sentence. Since the app only
+# ever supports Arabic or English as translation targets (see routes.py),
+# Chinese/Japanese/Korean characters should NEVER legitimately appear in
+# output. Rather than relying on the prompt alone, we hard-block every
+# vocabulary token that decodes to a CJK character via `suppress_tokens`,
+# computed once per loaded tokenizer and cached.
+_DISALLOWED_SCRIPT_RANGES = [
+    (0x4E00, 0x9FFF),    # CJK Unified Ideographs
+    (0x3400, 0x4DBF),    # CJK Unified Ideographs Extension A
+    (0x3040, 0x309F),    # Hiragana
+    (0x30A0, 0x30FF),    # Katakana
+    (0xAC00, 0xD7A3),    # Hangul syllables
+    (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
+]
+
+_suppressed_token_ids_cache = None
+
+
+def _contains_disallowed_script(text: str) -> bool:
+    for ch in text:
+        cp = ord(ch)
+        for start, end in _DISALLOWED_SCRIPT_RANGES:
+            if start <= cp <= end:
+                return True
+    return False
+
+
+def _get_suppressed_token_ids():
+    """Vocabulary token ids that decode to CJK characters (cached)."""
+    global _suppressed_token_ids_cache
+
+    if _suppressed_token_ids_cache is not None:
+        return _suppressed_token_ids_cache
+
+    if _tokenizer is None:
+        return []
+
+    vocab = _tokenizer.get_vocab()
+    suppressed = [
+        token_id
+        for token_str, token_id in vocab.items()
+        if _contains_disallowed_script(token_str)
+    ]
+
+    _suppressed_token_ids_cache = suppressed
+    logger.info(
+        "Translation language-drift guard: suppressing %d CJK-containing "
+        "tokens during generation.",
+        len(suppressed),
+    )
+    return suppressed
+
 
 def _free_vram():
     gc.collect()
@@ -71,18 +127,23 @@ def load_translation_model():
 
 def unload_translation_model():
     """Explicitly free the translation model (call between stages)."""
-    global _model, _tokenizer
+    global _model, _tokenizer, _suppressed_token_ids_cache
     with _lock:
         _model = None
         _tokenizer = None
+        _suppressed_token_ids_cache = None
     _free_vram()
 
 
 _SYSTEM_PROMPT_TEMPLATE = (
-    "You are an expert translator. Translate the following text to {target_language}. "
-    "Output ONLY the translated text. Do not include explanations, notes, or "
-    "conversational filler. Prioritize natural, fluent, and idiomatic phrasing "
-    "in the target language. Preserve the original meaning, tone, and context."
+    "You are an expert translator. Translate the following text into {target_language}. "
+    "Write the ENTIRE translation in {target_language}, using its native script throughout. "
+    "Proper nouns, brand names, and URLs (e.g. company or website names) may stay in their "
+    "original Latin spelling, but every other word must be in {target_language} -- never "
+    "switch into Chinese, Japanese, Korean, or any other unrelated language partway through. "
+    "Output ONLY the translated text: no explanations, notes, or conversational filler. "
+    "Prioritize natural, fluent, idiomatic phrasing while preserving the original meaning, "
+    "tone, and context."
 )
 
 
@@ -123,6 +184,7 @@ def _translate_chunk(text: str, target_language: str) -> str:
             max_new_tokens=config.TRANSLATION_MAX_TOKENS,
             do_sample=False,  # greedy -- deterministic translation
             repetition_penalty=1.1,
+            suppress_tokens=_get_suppressed_token_ids() or None,
         )
 
     generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
@@ -130,7 +192,19 @@ def _translate_chunk(text: str, target_language: str) -> str:
 
     del inputs, outputs, generated_tokens
 
-    return translated.strip()
+    translated = translated.strip()
+
+    if _contains_disallowed_script(translated):
+        # Should be effectively impossible now that CJK tokens are
+        # suppressed at the vocabulary level, but log loudly if it ever
+        # happens so it doesn't silently ship bad output again.
+        logger.warning(
+            "Translated chunk still contains unexpected CJK characters "
+            "despite token suppression: %r",
+            translated[:120],
+        )
+
+    return translated
 
 
 def translate_text(text: str, target_language: str) -> str:

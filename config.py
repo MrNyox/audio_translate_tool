@@ -9,19 +9,30 @@ JOB_OUTPUT_ROOT = Path(
 ).resolve()
 
 # Qwen3-ASR model id or local folder path.
+_LOCAL_ASR_DIR = BASE_DIR / "models" / "Qwen3-ASR-1.7B"
 MODEL_ID = (
     os.getenv("QWEN3_ASR_MODEL")
     or os.getenv("QWEN3_ASR")  # legacy name
-    or str(BASE_DIR / "models" / "Qwen3-ASR-1.7B")
+    or (str(_LOCAL_ASR_DIR) if _LOCAL_ASR_DIR.is_dir() else "Qwen/Qwen3-ASR-1.7B")
 )
 
 # Qwen3-ForcedAligner model id or local folder path. Loaded alongside the ASR
 # model so `.transcribe(..., return_time_stamps=True)` can return word-level
 # timestamps. If this fails to load, ASR still works -- we just fall back to
 # plain (un-timestamped) transcription and skip the ts_*/subtitle outputs.
-FORCED_ALIGNER_MODEL_ID = (
-    os.getenv("QWEN3_FORCED_ALIGNER_MODEL")
-    or str(BASE_DIR / "models" / "Qwen3-ForcedAligner-0.6B")
+#
+# Resolution order: explicit env var > a local `models/Qwen3-ForcedAligner-0.6B`
+# folder if you've already downloaded it > the public Hugging Face Hub repo id
+# (auto-downloaded on first use, given internet access -- e.g. on Colab).
+# We deliberately do NOT default straight to the local folder path the way
+# MODEL_ID historically did: if that folder doesn't exist, from_pretrained()
+# fails immediately (it's not a valid HF repo id), and the app was silently
+# falling back to timestamp-less transcription with no visible error.
+_LOCAL_ALIGNER_DIR = BASE_DIR / "models" / "Qwen3-ForcedAligner-0.6B"
+FORCED_ALIGNER_MODEL_ID = os.getenv("QWEN3_FORCED_ALIGNER_MODEL") or (
+    str(_LOCAL_ALIGNER_DIR)
+    if _LOCAL_ALIGNER_DIR.is_dir()
+    else "Qwen/Qwen3-ForcedAligner-0.6B"
 )
 
 # Device selection: auto, cpu, cuda, cuda:0, mps.
