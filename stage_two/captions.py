@@ -12,6 +12,8 @@ original visual track.
 import logging
 import struct
 import subprocess
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import List, Tuple, Optional
 
@@ -20,6 +22,107 @@ from stage_one import media
 
 logger = logging.getLogger(__name__)
 _FONT_FAMILY_CACHE: Optional[str] = None
+
+# --- Online caption font ----------------------------------------------------
+# Cairo is a single family purpose-built for bilingual Arabic/Latin UI text
+# (it extends Titillium Web's Latin design with a matching Arabic Kufi-based
+# design), so one font file covers both scripts cleanly with matching
+# proportions/weight -- no font-fallback mismatch between an Arabic-only
+# font and a separate Latin font. Google Fonts only ships it as a variable
+# font, so we download the variable master once and pin/instantiate a
+# single bold static weight (good contrast for burned-in captions, and
+# avoids relying on the ffmpeg/libass build correctly picking a named
+# instance out of a variable font, which many builds handle inconsistently).
+_ONLINE_FONT_URL = (
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/"
+    "Cairo%5Bslnt,wght%5D.ttf"
+)
+_ONLINE_FONT_VARIABLE_CACHE_NAME = "Cairo-Variable.ttf"
+_ONLINE_FONT_STATIC_CACHE_NAME = "Cairo-ExtraBold-Static.ttf"
+_ONLINE_FONT_WEIGHT = 800  # ExtraBold: bold/legible enough for on-video captions
+_ONLINE_FONT_DOWNLOAD_TIMEOUT = 12  # seconds
+
+
+def _instantiate_static_weight(variable_path: Path, static_path: Path, weight: int) -> bool:
+    """Pin a variable font to a single static weight instance via fontTools.
+
+    Returns True on success. Any failure (fontTools not installed, corrupt
+    font, etc.) is logged and treated as non-fatal -- callers fall back to
+    the bundled/local font instead.
+    """
+    try:
+        from fontTools.ttLib import TTFont
+        from fontTools.varLib.instancer import instantiateVariableFont
+    except ImportError:
+        logger.warning(
+            "fonttools is not installed, so the downloaded variable Cairo "
+            "font can't be pinned to a static weight. Add 'fonttools' to "
+            "requirements.txt to enable the online caption font."
+        )
+        return False
+
+    try:
+        font = TTFont(str(variable_path))
+        axes = {"wght": weight}
+        if "slnt" in {a.axisTag for a in font["fvar"].axes} if "fvar" in font else False:
+            axes["slnt"] = 0
+        static_font = instantiateVariableFont(font, axes, inplace=False)
+        tmp_path = static_path.with_suffix(".tmp")
+        static_font.save(str(tmp_path))
+        tmp_path.replace(static_path)
+        return True
+    except Exception:
+        logger.exception("Failed to instantiate static weight from %s", variable_path)
+        return False
+
+
+def _download_online_caption_font(font_dir: Path) -> Optional[Path]:
+    """
+    Ensure a bilingual Arabic/Latin caption font is available in
+    `font_dir`, downloading it from Google Fonts on first use and caching
+    the result on disk so subsequent runs don't re-fetch it.
+
+    Returns the path to a ready-to-use static .ttf, or None if the font
+    could not be obtained (no internet, blocked domain, fontTools missing,
+    etc.) -- in which case the caller should fall back to a bundled/local
+    font so subtitle rendering still works, just without this specific look.
+    """
+    font_dir.mkdir(parents=True, exist_ok=True)
+    static_path = font_dir / _ONLINE_FONT_STATIC_CACHE_NAME
+
+    if static_path.is_file() and static_path.stat().st_size > 0:
+        return static_path
+
+    variable_path = font_dir / _ONLINE_FONT_VARIABLE_CACHE_NAME
+
+    try:
+        logger.info("Downloading online caption font from %s", _ONLINE_FONT_URL)
+        request = urllib.request.Request(
+            _ONLINE_FONT_URL, headers={"User-Agent": "audio_translate_tool/1.0"}
+        )
+        with urllib.request.urlopen(request, timeout=_ONLINE_FONT_DOWNLOAD_TIMEOUT) as resp:
+            data = resp.read()
+
+        if not data:
+            raise ValueError("Downloaded font file was empty.")
+
+        tmp_variable_path = variable_path.with_suffix(".tmp")
+        tmp_variable_path.write_bytes(data)
+        tmp_variable_path.replace(variable_path)
+
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
+        logger.warning(
+            "Could not download online caption font (%s). Falling back to "
+            "the bundled/local subtitle font instead.",
+            exc,
+        )
+        return None
+
+    if not _instantiate_static_weight(variable_path, static_path, _ONLINE_FONT_WEIGHT):
+        return None
+
+    logger.info("Online caption font ready: %s", static_path)
+    return static_path
 
 
 def _read_font_family(path: Path) -> Optional[str]:
@@ -143,6 +246,23 @@ def _resolve_subtitle_font_family() -> str:
 
     family = config.SUBTITLE_FONT_NAME
     font_dir = Path(config.SUBTITLE_FONT_DIR)
+
+    # Preferred: a clean bilingual Arabic/Latin font fetched online (Cairo).
+    # This is best-effort -- any failure (offline, blocked domain, missing
+    # fonttools) falls straight through to the bundled/local font below, so
+    # subtitle rendering keeps working even with no internet access.
+    if config.SUBTITLE_USE_ONLINE_FONT:
+        online_font_path = _download_online_caption_font(font_dir)
+        if online_font_path is not None:
+            detected_family = _read_font_family(online_font_path)
+            if detected_family:
+                logger.info(
+                    "Using online caption font family '%s' from: %s",
+                    detected_family,
+                    online_font_path,
+                )
+                _FONT_FAMILY_CACHE = detected_family
+                return _FONT_FAMILY_CACHE
 
     if font_dir.is_dir():
         valid_suffixes = {".ttf", ".otf", ".ttc"}
@@ -318,12 +438,20 @@ def _escape_ffmpeg_filter_path(path: Path) -> str:
     return escaped
 
 
-def burn_subtitles(video_path, ass_path, output_path) -> None:
-    """Burn a .ass subtitle file into a video, re-encoding video only."""
+def burn_subtitles(video_path, ass_path, output_path, audio_source_path=None) -> None:
+    """Burn a .ass subtitle file into a video, re-encoding video only.
+
+    `audio_source_path`, if given and it actually contains an audio stream,
+    is muxed back in as the output's audio track -- `video_path` here is
+    the *muted* video from Stage One (audio was stripped out separately for
+    ASR), so without this the final "subtitled" video would be silent even
+    though the original clip had audio.
+    """
     if not media.ffmpeg_available():
         raise media.MediaError(
             "FFmpeg was not found. Please install FFmpeg and restart the server."
         )
+    media.check_arabic_rendering_support()
 
     video_path = Path(video_path)
     ass_path = Path(ass_path)
@@ -344,8 +472,17 @@ def burn_subtitles(video_path, ass_path, output_path) -> None:
     extension = output_path.suffix.lower()
     if extension == ".webm":
         video_codec = ["-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0"]
+        audio_codec = ["-c:a", "libopus", "-b:a", "160k"]
     else:
         video_codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+        audio_codec = ["-c:a", "aac", "-b:a", "192k"]
+
+    audio_source_path = Path(audio_source_path) if audio_source_path else None
+    include_audio = bool(
+        audio_source_path
+        and audio_source_path.is_file()
+        and media.has_audio_stream(audio_source_path)
+    )
 
     command = [
         media.FFMPEG_PATH,
@@ -353,12 +490,24 @@ def burn_subtitles(video_path, ass_path, output_path) -> None:
         "-loglevel", "error",
         "-y",
         "-i", str(video_path),
-        "-map", "0:v:0",  # Explicitly select ONLY the first video stream
-        "-vf", filter_arg,
-        *video_codec,
-        "-sn",            # Remove all subtitle streams (force only burned-in subs)
-        str(output_path),
     ]
+
+    if include_audio:
+        command += ["-i", str(audio_source_path)]
+
+    command += ["-map", "0:v:0"]  # Explicitly select ONLY the first video stream
+
+    if include_audio:
+        command += ["-map", "1:a:0", "-shortest"]
+
+    command += ["-vf", filter_arg, *video_codec]
+
+    if include_audio:
+        command += audio_codec
+    else:
+        command += ["-an"]
+
+    command += ["-sn", str(output_path)]  # Remove all subtitle streams (force only burned-in subs)
 
     try:
         completed = subprocess.run(command, capture_output=True, text=True, check=False)

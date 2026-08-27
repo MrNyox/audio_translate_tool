@@ -114,6 +114,14 @@ SUBTITLE_FONT_NAME = os.getenv("SUBTITLE_FONT_NAME", "IBM Plex Sans Arabic")
 # Changed from static/fonts to models to load the font locally as requested
 SUBTITLE_FONT_DIR = str(BASE_DIR / "models")
 
+# If true, captions.py downloads a clean bilingual Arabic/Latin font (Cairo)
+# from Google Fonts on first use and prefers it over SUBTITLE_FONT_NAME /
+# the local SUBTITLE_FONT_DIR scan. Cached to disk after the first fetch.
+# Falls back automatically to the bundled/local font if offline.
+SUBTITLE_USE_ONLINE_FONT = os.getenv("SUBTITLE_USE_ONLINE_FONT", "1") not in (
+    "0", "false", "False",
+)
+
 SUBTITLE_FONT_SIZE_RATIO = float(os.getenv("SUBTITLE_FONT_SIZE_RATIO", "0.045"))
 SUBTITLE_MARGIN_V_RATIO = float(os.getenv("SUBTITLE_MARGIN_V_RATIO", "0.08"))
 
