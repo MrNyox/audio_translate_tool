@@ -23,6 +23,9 @@ const ELEMENT_IDS = [
   "selTargetLang",
   "btnTranslate",
   "outputTranslatedBtn",
+  "outputSubtitledVideoBtn",
+  "subtitledVideoWrap",
+  "subtitledVideoPlayer",
 ];
 
 export function cacheElements() {
@@ -212,6 +215,21 @@ export function resetJobView() {
     els.outputTranslatedBtn.href = "#";
   }
 
+  if (els.outputSubtitledVideoBtn) {
+    els.outputSubtitledVideoBtn.hidden = true;
+    els.outputSubtitledVideoBtn.href = "#";
+  }
+
+  if (els.subtitledVideoWrap) {
+    els.subtitledVideoWrap.hidden = true;
+  }
+
+  if (els.subtitledVideoPlayer) {
+    els.subtitledVideoPlayer.pause();
+    els.subtitledVideoPlayer.removeAttribute("src");
+    els.subtitledVideoPlayer.load();
+  }
+
   if (els.stageTwoPanel) {
     els.stageTwoPanel.hidden = true;
   }
@@ -256,5 +274,39 @@ export function showTranslatedOutput(url) {
   if (els.outputTranslatedBtn) {
     els.outputTranslatedBtn.href = url;
     els.outputTranslatedBtn.hidden = false;
+  }
+}
+
+export function showSubtitledVideo(url) {
+  if (els.outputSubtitledVideoBtn) {
+    els.outputSubtitledVideoBtn.href = url;
+    els.outputSubtitledVideoBtn.hidden = false;
+  }
+
+  if (els.subtitledVideoPlayer && els.subtitledVideoWrap) {
+    // Avoid re-triggering a reload/re-buffer if we're called again with the
+    // same URL (e.g. a stray extra poll tick).
+    if (els.subtitledVideoPlayer.getAttribute("src") !== url) {
+      els.subtitledVideoPlayer.setAttribute("src", url);
+      els.subtitledVideoPlayer.load();
+    }
+    els.subtitledVideoWrap.hidden = false;
+  }
+}
+
+export function hideSubtitledVideo() {
+  if (els.outputSubtitledVideoBtn) {
+    els.outputSubtitledVideoBtn.hidden = true;
+    els.outputSubtitledVideoBtn.href = "#";
+  }
+
+  if (els.subtitledVideoWrap) {
+    els.subtitledVideoWrap.hidden = true;
+  }
+
+  if (els.subtitledVideoPlayer) {
+    els.subtitledVideoPlayer.pause();
+    els.subtitledVideoPlayer.removeAttribute("src");
+    els.subtitledVideoPlayer.load();
   }
 }
