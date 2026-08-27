@@ -109,6 +109,8 @@ CAPTION_MAX_GAP = float(os.getenv("CAPTION_MAX_GAP", "0.6"))
 # static/fonts/ and it will be picked up automatically via `fontsdir`; if
 # nothing is there, libass falls back to whatever font by this name (or a
 # close match) is installed on the system.
+SUBTITLE_FONT_NAME = os.getenv("SUBTITLE_FONT_NAME", "IBM Plex Sans Arabic")
+
 # Changed from static/fonts to models to load the font locally as requested
 SUBTITLE_FONT_DIR = str(BASE_DIR / "models")
 
