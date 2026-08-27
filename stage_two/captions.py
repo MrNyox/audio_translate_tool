@@ -1,23 +1,203 @@
 """Subtitle rendering.
-
 Turns timestamped, translated segments (ts_translated.json) into a styled
 .ass subtitle file, then burns it into the muted video from Stage One using
 ffmpeg's `ass` filter (libass). Style target: bold, high-contrast "modern
 short-form" captions -- white fill with a blue accent outline, similar to
 the on-screen captions common on TikTok/Reels/Shorts.
-
 TTS dubbing is intentionally out of scope here -- this module only ever
 produces a video with hard-coded (burned-in) subtitle text over the
 original visual track.
 """
 
+import logging
+import struct
 import subprocess
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import config
 from stage_one import media
 
+logger = logging.getLogger(__name__)
+_FONT_FAMILY_CACHE: Optional[str] = None
+
+
+def _read_font_family(path: Path) -> Optional[str]:
+    """
+    Read the internal font family name from a .ttf/.otf/.ttc file.
+
+    This is important because the file name does not matter to libass.
+    The ASS `Fontname` field must match the internal font family name.
+    """
+    try:
+        data = path.read_bytes()
+        if not data:
+            return None
+
+        # TrueType Collection support: use the first font in the collection.
+        if data[:4] == b"ttcf":
+            if len(data) < 16:
+                return None
+            offset = struct.unpack(">I", data[12:16])[0]
+        else:
+            offset = 0
+
+        if len(data) < offset + 12:
+            return None
+
+        num_tables = struct.unpack(">H", data[offset + 4:offset + 6])[0]
+        pos = offset + 12
+        name_offset = None
+
+        # Find the 'name' table.
+        for _ in range(num_tables):
+            if len(data) < pos + 16:
+                break
+
+            tag = data[pos:pos + 4]
+            if tag == b"name":
+                name_offset = struct.unpack(">I", data[pos + 8:pos + 12])[0]
+                break
+
+            pos += 16
+
+        if name_offset is None or len(data) < name_offset + 6:
+            return None
+
+        count = struct.unpack(">H", data[name_offset + 2:name_offset + 4])[0]
+        string_offset = struct.unpack(">H", data[name_offset + 4:name_offset + 6])[0]
+
+        strings_start = name_offset + string_offset
+        rec = name_offset + 6
+        candidates = []
+
+        for _ in range(count):
+            if len(data) < rec + 12:
+                break
+
+            platform_id, encoding_id, language_id, name_id, length, offset = struct.unpack(
+                ">HHHHHH",
+                data[rec:rec + 12]
+            )
+
+            # name_id 1  = Font Family
+            # name_id 16 = Typographic Family
+            if name_id in (1, 16):
+                start = strings_start + offset
+                raw = data[start:start + length]
+
+                try:
+                    if platform_id in (0, 3):
+                        # Unicode / Windows platforms are UTF-16BE.
+                        s = raw.decode("utf-16-be", "ignore")
+                    elif platform_id == 1:
+                        # Mac platform. Try UTF-8 first, then Latin-1.
+                        s = raw.decode("utf-8", "ignore")
+                        if not s:
+                            s = raw.decode("latin-1", "ignore")
+                    else:
+                        s = raw.decode("utf-8", "ignore")
+                except Exception:
+                    s = ""
+
+                s = s.strip()
+                if s:
+                    priority = 0
+
+                    # Prefer English Windows names if available.
+                    if platform_id == 3 and language_id == 0x0409:
+                        priority = 3
+                    elif platform_id == 0:
+                        priority = 2
+                    elif platform_id == 1 and language_id == 0:
+                        priority = 1
+
+                    # Prefer typographic family name if available.
+                    candidates.append((priority, name_id == 16, s))
+
+            rec += 12
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
+
+    except Exception:
+        logger.exception("Failed to read font family from %s", path)
+        return None
+
+
+def _resolve_subtitle_font_family() -> str:
+    """
+    Resolve the font family name that should be written into the ASS file.
+
+    If a local font file exists in config.SUBTITLE_FONT_DIR, read its real
+    internal family name. This prevents failures caused by the configured
+    font name not exactly matching the font file's internal name.
+    """
+    global _FONT_FAMILY_CACHE
+
+    if _FONT_FAMILY_CACHE is not None:
+        return _FONT_FAMILY_CACHE
+
+    family = config.SUBTITLE_FONT_NAME
+    font_dir = Path(config.SUBTITLE_FONT_DIR)
+
+    if font_dir.is_dir():
+        valid_suffixes = {".ttf", ".otf", ".ttc"}
+
+        font_files = [
+            p
+            for p in sorted(font_dir.iterdir())
+            if p.is_file() and p.suffix.lower() in valid_suffixes
+        ]
+
+        # If multiple font files exist, prefer Arabic/Plex-looking files first.
+        font_files.sort(
+            key=lambda p: (
+                0 if "arabic" in p.name.lower() else 1,
+                0 if "plex" in p.name.lower() else 1,
+                p.name,
+            )
+        )
+
+        for font_file in font_files:
+            detected_family = _read_font_family(font_file)
+            if detected_family:
+                logger.info(
+                    "Detected subtitle font family '%s' from file: %s",
+                    detected_family,
+                    font_file,
+                )
+                family = detected_family
+                break
+
+    _FONT_FAMILY_CACHE = family
+    return family
+
+
+def _segment_value(seg: dict, *keys, default=None):
+    """
+    Get a value from a segment dictionary while tolerating accidental
+    trailing/leading spaces in keys, e.g. "start " instead of "start".
+    """
+    if not isinstance(seg, dict):
+        return default
+
+    normalized = {}
+    for key, value in seg.items():
+        if isinstance(key, str):
+            normalized[key.strip()] = value
+
+    for key in keys:
+        if key in seg and seg[key] is not None:
+            return seg[key]
+
+        if key in normalized and normalized[key] is not None:
+            return normalized[key]
+
+    return default
 
 def video_dimensions(probe: dict) -> Tuple[int, int]:
     """Best-effort (width, height) from an ffprobe result. Falls back to a
@@ -56,6 +236,14 @@ def _escape_ass_text(text: str) -> str:
 
 def segments_to_ass(segments: List[dict], video_width: int, video_height: int) -> str:
     """Build a complete .ass subtitle file from translated segments."""
+
+    font_name = _resolve_subtitle_font_family()
+
+    logger.info(
+        "Generating ASS subtitles using font family: '%s'",
+        font_name,
+    )
+
     font_size = max(18, int(round(video_height * config.SUBTITLE_FONT_SIZE_RATIO)))
     margin_v = max(20, int(round(video_height * config.SUBTITLE_MARGIN_V_RATIO)))
 
@@ -64,7 +252,7 @@ def segments_to_ass(segments: List[dict], video_width: int, video_height: int) -
         "ScriptType: v4.00+\n"
         f"PlayResX: {video_width}\n"
         f"PlayResY: {video_height}\n"
-        "WrapStyle: 2\n"
+        "WrapStyle: 0\n"
         "ScaledBorderAndShadow: yes\n"
         "\n"
         "[V4+ Styles]\n"
@@ -73,7 +261,7 @@ def segments_to_ass(segments: List[dict], video_width: int, video_height: int) -
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         "Style: Caption,"
-        f"{config.SUBTITLE_FONT_NAME},{font_size},"
+        f"{font_name},{font_size},"
         f"{config.SUBTITLE_PRIMARY_COLOR},{config.SUBTITLE_PRIMARY_COLOR},"
         f"{config.SUBTITLE_OUTLINE_COLOR},{config.SUBTITLE_BACK_COLOR},"
         f"-1,0,0,0,100,100,0,0,1,"
@@ -85,22 +273,40 @@ def segments_to_ass(segments: List[dict], video_width: int, video_height: int) -
     )
 
     lines = [header]
+
     for seg in segments:
-        start_value = float(seg.get("start") or 0.0)
-        end_value = seg.get("end")
-        end_value = float(end_value) if end_value is not None else start_value
+        try:
+            start_value = float(
+                _segment_value(seg, "start", "start_time", default=0.0) or 0.0
+            )
+        except Exception:
+            start_value = 0.0
+
+        end_raw = _segment_value(seg, "end", "end_time", default=None)
+
+        try:
+            end_value = float(end_raw) if end_raw is not None else start_value
+        except Exception:
+            end_value = start_value
+
         if end_value <= start_value:
             end_value = start_value + 0.5  # guarantee a visible, non-zero cue
 
-        text = _escape_ass_text(str(seg.get("text", "")).strip())
+        raw_text = _segment_value(seg, "text", default="")
+        text = _escape_ass_text(str(raw_text or "").strip())
+
         if not text:
             continue
 
         start = _format_ass_time(start_value)
         end = _format_ass_time(end_value)
-        lines.append(f"Dialogue: 0,{start},{end},Caption,,0,0,0,,{text}\n")
 
-    return "".join(lines)
+        lines.append(
+            f"Dialogue: 0,{start},{end},Caption,,0,0,0,,{text}\n"
+        )
+
+    # UTF-8 BOM helps some subtitle parsers/renderers detect UTF-8 correctly.
+    return "\ufeff" + "".join(lines)
 
 
 def _escape_ffmpeg_filter_path(path: Path) -> str:
