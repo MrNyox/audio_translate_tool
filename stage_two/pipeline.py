@@ -45,7 +45,22 @@ def _render_subtitled_video(job_id: str, job_dir: Path, outputs: dict, translate
         ass_path.write_text(ass_content, encoding="utf-8")
 
         subtitled_path = job_dir / f"{config.SUBTITLED_VIDEO_PREFIX}{video_path.suffix.lower()}"
-        captions.burn_subtitles(video_path, ass_path, subtitled_path)
+
+        # --- Locate the original uploaded source file (which contains the audio) ---
+        audio_source_path = None
+        for candidate in sorted(job_dir.glob(f"{config.SOURCE_PREFIX}.*")):
+            if candidate.is_file():
+                audio_source_path = candidate
+                break
+        # ---------------------------------------------------------------------------
+
+        # Pass audio_source_path to burn_subtitles so it muxes the original audio back in
+        captions.burn_subtitles(
+            video_path,
+            ass_path,
+            subtitled_path,
+            audio_source_path=audio_source_path
+        )
 
         outputs["subtitled_video_path"] = str(subtitled_path)
 
