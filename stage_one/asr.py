@@ -75,7 +75,13 @@ def _resolve_torch_dtype(torch_module, device: str):
 
     if requested in {"", "auto"}:
         if device.startswith("cuda"):
-            return torch_module.bfloat16
+            # bfloat16 requires Ampere (compute capability 8.0) or newer.
+            # T4 and older GPUs (compute capability 7.x) will crash or
+            # fail to load certain models (like Qwen3-ForcedAligner) if
+            # forced to use bfloat16 in custom CUDA kernels.
+            if hasattr(torch_module.cuda, "is_bf16_supported") and torch_module.cuda.is_bf16_supported():
+                return torch_module.bfloat16
+            return torch_module.float16
         return torch_module.float32
 
     mapping = {

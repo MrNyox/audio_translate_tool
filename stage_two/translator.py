@@ -63,19 +63,47 @@ def _get_suppressed_token_ids():
         return []
 
     vocab = _tokenizer.get_vocab()
-    suppressed = [
-        token_id
-        for token_str, token_id in vocab.items()
-        if _contains_disallowed_script(token_str)
-    ]
+    suppressed = set()
 
-    _suppressed_token_ids_cache = suppressed
+    # 1. Suppress tokens that directly decode to CJK characters.
+    #    `token_str` from vocab.items() is the raw BPE byte-mapped string
+    #    (e.g. GPT-2 style unicode), NOT the actual character. We must
+    #    decode it to check for CJK.
+    for token_str, token_id in vocab.items():
+        try:
+            decoded = _tokenizer.decode([token_id])
+            if _contains_disallowed_script(decoded):
+                suppressed.add(token_id)
+        except Exception:
+            pass
+
+    # 2. Suppress byte-level tokens used to build CJK characters.
+    #    Qwen uses byte-level BPE, meaning a CJK character may be split
+    #    into multiple byte tokens. We encode a sample of CJK characters
+    #    to capture and ban all the subword byte tokens the tokenizer
+    #    uses to form them, physically preventing Chinese generation.
+    try:
+        cjk_sample = "".join(
+            chr(cp)
+            for start, end in _DISALLOWED_SCRIPT_RANGES
+            for cp in range(start, min(start + 200, end + 1))
+        )
+        cjk_token_ids = _tokenizer.encode(cjk_sample, add_special_tokens=False)
+        suppressed.update(cjk_token_ids)
+
+        cjk_with_spaces = " " + " ".join(list(cjk_sample))
+        cjk_space_token_ids = _tokenizer.encode(cjk_with_spaces, add_special_tokens=False)
+        suppressed.update(cjk_space_token_ids)
+    except Exception:
+        pass
+
+    _suppressed_token_ids_cache = list(suppressed)
     logger.info(
-        "Translation language-drift guard: suppressing %d CJK-containing "
+        "Translation language-drift guard: suppressing %d CJK-containing/byte "
         "tokens during generation.",
-        len(suppressed),
+        len(_suppressed_token_ids_cache),
     )
-    return suppressed
+    return _suppressed_token_ids_cache
 
 
 def _free_vram():
