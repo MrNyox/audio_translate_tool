@@ -141,20 +141,18 @@ def burn_subtitles(video_path, ass_path, output_path) -> None:
     else:
         video_codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
 
-    command = [
-        media.FFMPEG_PATH,
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-i",
-        str(video_path),
-        "-vf",
-        filter_arg,
-        *video_codec,
-        "-an",
-        str(output_path),
-    ]
+        command = [
+            media.FFMPEG_PATH,
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-i", str(video_path),
+            "-map", "0:v:0",  # Explicitly select ONLY the first video stream
+            "-vf", filter_arg,
+            *video_codec,
+            "-sn",            # Remove all subtitle streams (force only burned-in subs)
+            str(output_path),
+        ]
 
     try:
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
