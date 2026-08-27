@@ -75,13 +75,11 @@ def _resolve_torch_dtype(torch_module, device: str):
 
     if requested in {"", "auto"}:
         if device.startswith("cuda"):
-            # bfloat16 requires Ampere (compute capability 8.0) or newer.
-            # T4 and older GPUs (compute capability 7.x) will crash or
-            # fail to load certain models (like Qwen3-ForcedAligner) if
-            # forced to use bfloat16 in custom CUDA kernels.
-            if hasattr(torch_module.cuda, "is_bf16_supported") and torch_module.cuda.is_bf16_supported():
-                return torch_module.bfloat16
-            return torch_module.float16
+            # Qwen3-ASR and Qwen3-ForcedAligner models are trained in bfloat16.
+            # Their custom attention/timestamp kernels strictly require bfloat16
+            # and will crash if forced to use float16. T4 GPUs and newer in PyTorch
+            # support bfloat16 well enough (via software emulation or partial hardware support).
+            return torch_module.bfloat16
         return torch_module.float32
 
     mapping = {
@@ -304,17 +302,26 @@ def _run_transcription(audio_path, with_timestamps: bool) -> dict:
 
     segments = []
     if want_timestamps:
-        raw_stamps = getattr(result, "time_stamps", None)
-        if raw_stamps is None and isinstance(result, dict):
-            raw_stamps = result.get("time_stamps")
+                raw_stamps = getattr(result, "time_stamps", None)
+                if raw_stamps is None and isinstance(result, dict):
+                    raw_stamps = result.get("time_stamps")
 
-        word_stamps = []
-        if raw_stamps:
-            # `time_stamps` is batched (one list per input audio); we only
-            # ever pass a single audio file in, so take the first entry.
-            word_stamps = raw_stamps[0] if isinstance(raw_stamps, list) else []
+                word_stamps = []
+                if raw_stamps:
+                    # `time_stamps` is usually a ForcedAlignResult object which has
+                    # an `items` attribute or supports iteration. It may also be a
+                    # list of lists in older/batched versions of the package.
+                    if hasattr(raw_stamps, "items"):
+                        word_stamps = raw_stamps.items
+                    elif isinstance(raw_stamps, list):
+                        word_stamps = raw_stamps[0] if raw_stamps else []
+                    else:
+                        try:
+                            word_stamps = list(raw_stamps)
+                        except Exception:
+                            word_stamps = []
 
-        segments = _group_word_stamps(word_stamps)
+                segments = _group_word_stamps(word_stamps)
 
     return {"text": text, "segments": segments}
 
