@@ -38,6 +38,12 @@ _DISALLOWED_SCRIPT_RANGES = [
     (0x30A0, 0x30FF),    # Katakana
     (0xAC00, 0xD7A3),    # Hangul syllables
     (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
+    (0x0400, 0x04FF),    # Cyrillic
+    (0x0500, 0x052F),    # Cyrillic Supplement
+    (0x0370, 0x03FF),    # Greek and Coptic
+    (0x0590, 0x05FF),    # Hebrew
+    (0x0E00, 0x0E7F),    # Thai
+    (0x0900, 0x097F),    # Devanagari
 ]
 
 _suppressed_token_ids_cache = None
