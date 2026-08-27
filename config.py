@@ -109,14 +109,15 @@ CAPTION_MAX_GAP = float(os.getenv("CAPTION_MAX_GAP", "0.6"))
 # static/fonts/ and it will be picked up automatically via `fontsdir`; if
 # nothing is there, libass falls back to whatever font by this name (or a
 # close match) is installed on the system.
-SUBTITLE_FONT_NAME = os.getenv("SUBTITLE_FONT_NAME", "Poppins ExtraBold")
-SUBTITLE_FONT_DIR = str(BASE_DIR / "static" / "fonts")
+# Changed from static/fonts to models to load the font locally as requested
+SUBTITLE_FONT_DIR = str(BASE_DIR / "models")
+
 SUBTITLE_FONT_SIZE_RATIO = float(os.getenv("SUBTITLE_FONT_SIZE_RATIO", "0.045"))
 SUBTITLE_MARGIN_V_RATIO = float(os.getenv("SUBTITLE_MARGIN_V_RATIO", "0.08"))
 
 # ASS colours use &HAABBGGRR (alpha, blue, green, red). Alpha 00 = opaque.
-SUBTITLE_PRIMARY_COLOR = os.getenv("SUBTITLE_PRIMARY_COLOR", "&H00FFFFFF")  # white fill
-SUBTITLE_OUTLINE_COLOR = os.getenv("SUBTITLE_OUTLINE_COLOR", "&H00FF802F")  # #2F80FF blue accent
-SUBTITLE_BACK_COLOR = os.getenv("SUBTITLE_BACK_COLOR", "&H80000000")        # soft black shadow
+SUBTITLE_PRIMARY_COLOR = os.getenv("SUBTITLE_PRIMARY_COLOR", "&H00FFFFFF") # white fill
+SUBTITLE_OUTLINE_COLOR = os.getenv("SUBTITLE_OUTLINE_COLOR", "&H00FF802F") # #2F80FF blue accent
+SUBTITLE_BACK_COLOR = os.getenv("SUBTITLE_BACK_COLOR", "&H80000000") # soft black shadow
 SUBTITLE_OUTLINE_WIDTH = float(os.getenv("SUBTITLE_OUTLINE_WIDTH", "3.2"))
 SUBTITLE_SHADOW = float(os.getenv("SUBTITLE_SHADOW", "0.8"))
