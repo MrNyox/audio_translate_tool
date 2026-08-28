@@ -263,15 +263,173 @@ def translate_text(text: str, target_language: str) -> str:
         return "\n".join(translated_chunks)
 
 
+def _build_batch_system_prompt(target_language: str, count: int) -> str:
+    return (
+        f"You are an expert translator. Translate the following list of text segments "
+        f"into {target_language}. Write the ENTIRE translation in {target_language}, "
+        f"using its native script throughout. Proper nouns, brand names, and URLs may "
+        f"stay in their original Latin spelling, but every other word must be in "
+        f"{target_language}. Never switch into Chinese, Japanese, Korean, or any other "
+        f"unrelated language partway through.\n\n"
+        f"Output ONLY a valid JSON array of strings. Each string in the array must be "
+        f"the translation of the corresponding input segment in the exact same order. "
+        f"Do not output markdown blocks like ```json. Do not include any explanations, "
+        f"notes, or conversational filler. Just the raw JSON array.\n"
+        f"Prioritize natural, fluent, idiomatic phrasing while preserving the original "
+        f"meaning, tone, and context."
+    )
+
+
+def _parse_translated_json_array(translated_raw: str) -> List[str]:
+    """Best-effort extraction of a JSON string array from raw LLM output."""
+    translated_list: List[str] = []
+    try:
+        match = re.search(r'\[.*', translated_raw, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+
+            # Append closing bracket if generation was cut off
+            if not json_str.rstrip().endswith(']'):
+                json_str += ']'
+
+            try:
+                parsed = json.loads(json_str)
+                if isinstance(parsed, list):
+                    translated_list = [str(item).strip() for item in parsed]
+                else:
+                    # Fallback if it returned a dict: find the list inside the values
+                    for v in parsed.values():
+                        if isinstance(v, list):
+                            translated_list = [str(item).strip() for item in v]
+                            break
+            except json.JSONDecodeError:
+                # Fallback for malformed arrays (e.g., missing commas): extract quoted strings
+                strings = re.findall(r'"((?:[^"\\]|\\.)*)"', json_str)
+                translated_list = [
+                    s.encode().decode("unicode_escape").strip() for s in strings
+                ]
+        else:
+            # Fallback if no brackets are found at all
+            translated_list = [
+                line.strip() for line in translated_raw.split("\n") if line.strip()
+            ]
+    except Exception as exc:
+        logger.warning(
+            "Failed to parse JSON array from LLM output, falling back to line split: %s",
+            exc,
+        )
+        translated_list = [
+            line.strip() for line in translated_raw.split("\n") if line.strip()
+        ]
+    return translated_list
+
+
+def _generate_batch_translation(source_texts: List[str], target_language: str) -> List[str]:
+    """Run one batched JSON-array translation call. Assumes caller holds `_lock`."""
+    system_prompt = _build_batch_system_prompt(target_language, len(source_texts))
+    user_content = json.dumps(source_texts, ensure_ascii=False)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    input_text = _tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+    inputs = _tokenizer(
+        input_text,
+        return_tensors="pt",
+        truncation=True,
+        max_length=config.TRANSLATION_MAX_TOKENS + 512,
+    ).to(_model.device)
+
+    with torch.no_grad():
+        outputs = _model.generate(
+            **inputs,
+            max_new_tokens=config.TRANSLATION_MAX_TOKENS,
+            do_sample=False,
+            repetition_penalty=1.1,
+            suppress_tokens=_get_suppressed_token_ids() or None,
+        )
+
+    generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    translated_raw = _tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+
+    del inputs, outputs, generated_tokens
+
+    return _parse_translated_json_array(translated_raw)
+
+
+def _redistribute_batch_timestamps(batch: List[dict], translated_list: List[str]) -> List[tuple]:
+    """
+    Used only when the model returns a different number of translated
+    strings than input segments (it merged or split fragments while
+    translating -- common because the input segments are fixed-length ASR
+    chunks, not sentence boundaries, and a fluent translation naturally
+    wants to recombine them).
+
+    There's no way to know exactly which original segments a given merged
+    translated string corresponds to without re-running alignment, so
+    instead of guessing (or discarding the mismatch and losing content),
+    this spreads the batch's overall time window -- first segment's start
+    to last segment's end -- across the translated strings proportionally
+    to each string's length. This keeps the model's original, fully
+    context-aware translation intact (no quality loss from re-translating
+    fragments in isolation) and guarantees every translated string gets a
+    reasonable, gap-free window and nothing is dropped. The exact cue
+    boundaries here don't need to be precise: `normalize_subtitle_pacing`
+    re-times everything to actual reading speed afterward anyway.
+    """
+    batch_start = float(batch[0].get("start", 0.0) or 0.0)
+    batch_end = float(batch[-1].get("end", batch_start) or batch_start)
+    if batch_end <= batch_start:
+        batch_end = batch_start + max(len(translated_list), 1) * 1.0
+
+    total_span = batch_end - batch_start
+    weights = [max(1, len(t.split())) for t in translated_list]
+    total_weight = sum(weights) or 1
+
+    result = []
+    cursor = batch_start
+    for w in weights:
+        duration = total_span * (w / total_weight)
+        seg_start = cursor
+        seg_end = cursor + duration
+        result.append((round(seg_start, 3), round(seg_end, 3)))
+        cursor = seg_end
+
+    if result:
+        # Snap the last cue's end to the batch's true end to avoid drift
+        # from repeated float addition.
+        last_start, _ = result[-1]
+        result[-1] = (last_start, round(batch_end, 3))
+
+    return result
+
+
 def translate_segments(segments: List[dict], target_language: str) -> List[dict]:
     """Translate a list of {"start", "end", "text"} segments.
 
     Groups segments into large batches (up to the token budget) to give
     the model enough context to prevent language drift and hallucinations
     (stray words from other languages). It then prompts the model to output
-    a JSON array of translated strings, mapping exactly 1-to-1 back to the
-    input segments. This ensures the translation quality and phrasing match
-    the flat translated.txt output.
+    a JSON array of translated strings, mapping 1-to-1 back to the input
+    segments when possible.
+
+    That 1-to-1 mapping isn't guaranteed just by asking for it: the input
+    segments are fixed-length ASR chunks that often cut mid-sentence, and a
+    fluent translation naturally wants to merge such fragments into fewer,
+    more complete sentences. When that happens, the returned list is
+    shorter (or longer) than the input batch, so index-based timestamp
+    assignment would misattribute text to the wrong window and silently
+    drop the rest. When the counts match, each translated string keeps its
+    corresponding segment's exact original timestamps. When they don't,
+    `_redistribute_batch_timestamps` spreads the batch's overall time
+    span across the translated strings instead, so nothing is lost.
     """
     with _lock:
         load_translation_model()
@@ -303,115 +461,30 @@ def translate_segments(segments: List[dict], target_language: str) -> List[dict]
         for batch in batches:
             source_texts = [str(seg.get("text", "")).strip() for seg in batch]
 
-            system_prompt = (
-                f"You are an expert translator. Translate the following list of text segments "
-                f"into {target_language}. Write the ENTIRE translation in {target_language}, "
-                f"using its native script throughout. Proper nouns, brand names, and URLs may "
-                f"stay in their original Latin spelling, but every other word must be in "
-                f"{target_language}. Never switch into Chinese, Japanese, Korean, or any other "
-                f"unrelated language partway through.\n\n"
-                f"Output ONLY a valid JSON array of strings. Each string in the array must be "
-                f"the translation of the corresponding input segment in the exact same order. "
-                f"Do not output markdown blocks like ```json. Do not include any explanations, "
-                f"notes, or conversational filler. Just the raw JSON array.\n"
-                f"Prioritize natural, fluent, idiomatic phrasing while preserving the original "
-                f"meaning, tone, and context."
-            )
+            translated_list = _generate_batch_translation(source_texts, target_language)
 
-            user_content = json.dumps(source_texts, ensure_ascii=False)
+            if not translated_list:
+                # Nothing usable came back at all; skip rather than fabricate content.
+                continue
 
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ]
-
-            input_text = _tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-
-            inputs = _tokenizer(
-                input_text,
-                return_tensors="pt",
-                truncation=True,
-                max_length=config.TRANSLATION_MAX_TOKENS + 512,
-            ).to(_model.device)
-
-            with torch.no_grad():
-                outputs = _model.generate(
-                    **inputs,
-                    max_new_tokens=config.TRANSLATION_MAX_TOKENS,
-                    do_sample=False,
-                    repetition_penalty=1.1,
-                    suppress_tokens=_get_suppressed_token_ids() or None,
-                )
-
-            generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
-            translated_raw = _tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
-
-            del inputs, outputs, generated_tokens
-
-            # 3. Robust JSON extraction (handles conversational filler, missing commas, or cut-off generation)
-            translated_list = []
-            try:
-                match = re.search(r'\[.*', translated_raw, re.DOTALL)
-                if match:
-                    json_str = match.group(0)
-
-                    # Append closing bracket if generation was cut off
-                    if not json_str.rstrip().endswith(']'):
-                        json_str += ']'
-
-                    try:
-                        parsed = json.loads(json_str)
-                        if isinstance(parsed, list):
-                            translated_list = [str(item).strip() for item in parsed]
-                        else:
-                            # Fallback if it returned a dict: find the list inside the values
-                            for v in parsed.values():
-                                if isinstance(v, list):
-                                    translated_list = [str(item).strip() for item in v]
-                                    break
-                    except json.JSONDecodeError:
-                        # Fallback for malformed arrays (e.g., missing commas): extract quoted strings
-                        strings = re.findall(r'"((?:[^"\\]|\\.)*)"', json_str)
-                        translated_list = [
-                            s.encode().decode("unicode_escape").strip() for s in strings
-                        ]
-                else:
-                    # Fallback if no brackets are found at all
-                    translated_list = [
-                        line.strip() for line in translated_raw.split("\n") if line.strip()
-                    ]
-            except Exception as exc:
-                logger.warning(
-                    "Failed to parse JSON array from LLM output, falling back to line split: %s",
-                    exc,
-                )
-                translated_list = [
-                    line.strip() for line in translated_raw.split("\n") if line.strip()
-                ]
-
-            # 4. Map translated strings back to the original timestamps
-            for i, seg in enumerate(batch):
-                if i < len(translated_list):
+            if len(translated_list) == len(batch):
+                # Clean 1:1 mapping -- each translated string keeps its
+                # corresponding segment's exact original timestamps.
+                for seg, text in zip(batch, translated_list):
                     translated_segments.append(
-                        {
-                            "start": seg.get("start"),
-                            "end": seg.get("end"),
-                            "text": translated_list[i],
-                        }
+                        {"start": seg.get("start"), "end": seg.get("end"), "text": text}
                     )
-                else:
-                    # Fill empty string if model output fewer items than requested
-                    translated_segments.append(
-                        {
-                            "start": seg.get("start"),
-                            "end": seg.get("end"),
-                            "text": "",
-                        }
-                    )
+            else:
+                logger.info(
+                    "Batch translation returned %d items for %d input segments "
+                    "(model merged/split fragments during translation); "
+                    "redistributing timestamps proportionally across the "
+                    "batch's time window instead of dropping content.",
+                    len(translated_list), len(batch),
+                )
+                windows = _redistribute_batch_timestamps(batch, translated_list)
+                for (start, end), text in zip(windows, translated_list):
+                    translated_segments.append({"start": start, "end": end, "text": text})
 
         return translated_segments
 
