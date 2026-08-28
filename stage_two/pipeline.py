@@ -106,6 +106,11 @@ def process_translation(job_id: str, target_language: str) -> None:
 
             translated_segments = translator.translate_segments(segments, target_language)
 
+            # --- NEW: Normalize subtitle pacing for comfortable reading ---
+            # Splits dense segments so they don't exceed normal reading speeds
+            translated_segments = captions.normalize_subtitle_pacing(translated_segments)
+            # --------------------------------------------------------------
+
             ts_translated_path = job_dir / config.TS_TRANSLATED_FILENAME
             ts_translated_path.write_text(
                 json.dumps({"segments": translated_segments}, ensure_ascii=False, indent=2),

@@ -16,6 +16,8 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from typing import List, Tuple, Optional
+import math
+import re
 
 import config
 from stage_one import media
@@ -436,6 +438,101 @@ def _escape_ffmpeg_filter_path(path: Path) -> str:
     escaped = escaped.replace(":", "\\:")
     escaped = escaped.replace("'", "\\'")
     return escaped
+
+def _split_text_intelligently(text: str, num_chunks: int) -> list:
+    """Splits text into chunks, preferring to break at punctuation."""
+    # Split on English and Arabic punctuation (. ! ? ، ؛ ؟) followed by optional whitespace
+    splits = re.split(r'(?<=[.!?،؛؟\?\!])\s*', text)
+    splits = [s.strip() for s in splits if s.strip()] # Clean up empty strings
+
+    if len(splits) >= num_chunks:
+        grouped = []
+        current_group = []
+        total_chars = sum(len(s) for s in splits)
+        target_chars = total_chars / num_chunks
+
+        current_len = 0
+        for s in splits:
+            current_group.append(s)
+            current_len += len(s) + 1
+            if current_len >= target_chars and len(grouped) < num_chunks - 1:
+                grouped.append(" ".join(current_group))
+                current_group = []
+                current_len = 0
+        if current_group:
+            grouped.append(" ".join(current_group))
+
+        if len(grouped) >= num_chunks:
+            return grouped
+
+    # Fallback: split purely by words if no punctuation is found
+    words = text.split()
+    words_per_chunk = math.ceil(len(words) / num_chunks)
+    return [" ".join(words[i * words_per_chunk : (i + 1) * words_per_chunk]) for i in range(num_chunks)]
+
+
+def normalize_subtitle_pacing(
+    segments: List[dict],
+    max_words: int = 8,
+    max_wps: float = 3.0,
+    min_duration: float = 0.8
+) -> List[dict]:
+    """
+    Adjusts subtitle pacing by splitting segments that are too long or too fast to read.
+    Ensures a comfortable reading experience that matches normal human speech/reading rates.
+    """
+    normalized = []
+
+    for seg in segments:
+        start = float(seg.get("start", 0.0) or 0.0)
+        end_raw = seg.get("end")
+        end = float(end_raw) if end_raw is not None else start
+        text = str(seg.get("text", "")).strip()
+
+        if not text:
+            continue
+
+        words = text.split()
+        word_count = len(words)
+
+        if word_count == 0:
+            continue
+
+        if end <= start:
+            end = start + min_duration
+
+        duration = end - start
+        wps = word_count / duration if duration > 0 else float('inf')
+
+        # Determine how many chunks we need to split this into
+        chunks_needed = 1
+        if word_count > max_words:
+            chunks_needed = max(chunks_needed, math.ceil(word_count / max_words))
+        if wps > max_wps and duration > 0:
+            chunks_needed = max(chunks_needed, math.ceil(wps / max_wps))
+
+        if chunks_needed == 1:
+            normalized.append(seg)
+        else:
+            chunk_texts = _split_text_intelligently(text, chunks_needed)
+            actual_chunks = len(chunk_texts)
+
+            for i, chunk_text in enumerate(chunk_texts):
+                # Divide the time proportionally
+                chunk_start = start + (duration * i / actual_chunks)
+                chunk_end = start + (duration * (i + 1) / actual_chunks)
+
+                # Prevent subtitles from flashing too quickly for the brain to register
+                if chunk_end - chunk_start < min_duration:
+                    chunk_end = chunk_start + min_duration
+
+                normalized.append({
+                    "start": round(chunk_start, 3),
+                    "end": round(chunk_end, 3),
+                    "text": chunk_text.strip()
+                })
+
+    return normalized
 
 
 def burn_subtitles(video_path, ass_path, output_path, audio_source_path=None) -> None:
