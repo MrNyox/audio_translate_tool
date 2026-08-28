@@ -40,7 +40,12 @@ def _render_subtitled_video(job_id: str, job_dir: Path, outputs: dict, translate
         probe = media.probe_media(video_path)
         width, height = captions.video_dimensions(probe)
 
-        ass_content = captions.segments_to_ass(translated_segments, width, height)
+        # translated_segments was already run through normalize_subtitle_pacing
+        # in process_translation before this function was called, so tell
+        # segments_to_ass not to normalize a second time.
+        ass_content = captions.segments_to_ass(
+            translated_segments, width, height, apply_pacing=False
+        )
         ass_path = job_dir / "captions.ass"
         ass_path.write_text(ass_content, encoding="utf-8")
 

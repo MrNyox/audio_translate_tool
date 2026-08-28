@@ -354,8 +354,37 @@ def _escape_ass_text(text: str) -> str:
     )
 
 
-def segments_to_ass(segments: List[dict], video_width: int, video_height: int) -> str:
-    """Build a complete .ass subtitle file from translated segments."""
+def segments_to_ass(
+    segments: List[dict],
+    video_width: int,
+    video_height: int,
+    *,
+    apply_pacing: bool = True,
+    max_words: int = 7,
+    target_wps: float = 2.5,
+    min_duration: float = 0.8,
+    min_gap: float = 0.08,
+) -> str:
+    """Build a complete .ass subtitle file from translated segments.
+
+    By default this re-times the segments through `normalize_subtitle_pacing`
+    first. Raw segment start/end windows come from the *original* speech's
+    timing and say nothing about how long the (possibly translated) caption
+    text actually takes to read -- a short window with a lot of text would
+    otherwise flash by too fast, and a long window with little text would
+    otherwise linger on screen well after the speaker has moved on. Pass
+    `apply_pacing=False` only if `segments` has already been normalized
+    upstream and you want to avoid re-chunking it a second time.
+    """
+
+    if apply_pacing:
+        segments = normalize_subtitle_pacing(
+            segments,
+            max_words=max_words,
+            target_wps=target_wps,
+            min_duration=min_duration,
+            min_gap=min_gap,
+        )
 
     font_name = _resolve_subtitle_font_family()
 
