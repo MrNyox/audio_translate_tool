@@ -16,8 +16,6 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from typing import List, Tuple, Optional
-import math
-import re
 
 import config
 from stage_one import media
@@ -439,51 +437,81 @@ def _escape_ffmpeg_filter_path(path: Path) -> str:
     escaped = escaped.replace("'", "\\'")
     return escaped
 
-def _split_text_intelligently(text: str, num_chunks: int) -> list:
-    """Splits text into chunks, preferring to break at punctuation."""
-    # Split on English and Arabic punctuation (. ! ? ، ؛ ؟) followed by optional whitespace
-    splits = re.split(r'(?<=[.!?،؛؟\?\!])\s*', text)
-    splits = [s.strip() for s in splits if s.strip()] # Clean up empty strings
+# Punctuation that makes a natural place to break a line (English + Arabic).
+_STRONG_BREAK_CHARS = ".!?؟!،؛:,"
 
-    if len(splits) >= num_chunks:
-        grouped = []
-        current_group = []
-        total_chars = sum(len(s) for s in splits)
-        target_chars = total_chars / num_chunks
 
-        current_len = 0
-        for s in splits:
-            current_group.append(s)
-            current_len += len(s) + 1
-            if current_len >= target_chars and len(grouped) < num_chunks - 1:
-                grouped.append(" ".join(current_group))
-                current_group = []
-                current_len = 0
-        if current_group:
-            grouped.append(" ".join(current_group))
-
-        if len(grouped) >= num_chunks:
-            return grouped
-
-    # Fallback: split purely by words if no punctuation is found
+def _split_into_word_chunks(text: str, max_words: int) -> list:
+    """Split text into chunks of at most `max_words` words, preferring to
+    end a chunk on a punctuation mark near the word-count limit so breaks
+    land on natural clause/sentence boundaries instead of mid-phrase.
+    """
     words = text.split()
-    words_per_chunk = math.ceil(len(words) / num_chunks)
-    return [" ".join(words[i * words_per_chunk : (i + 1) * words_per_chunk]) for i in range(num_chunks)]
+    if len(words) <= max_words:
+        return [text]
+
+    chunks = []
+    i = 0
+    n = len(words)
+
+    while i < n:
+        window_end = min(i + max_words, n)
+
+        if window_end >= n:
+            chosen_end = n
+        else:
+            # Scan backward from the window edge for a word ending in
+            # punctuation, so we don't cut a sentence off arbitrarily.
+            chosen_end = window_end
+            for j in range(window_end, i + 1, -1):
+                if words[j - 1] and words[j - 1][-1] in _STRONG_BREAK_CHARS:
+                    chosen_end = j
+                    break
+
+        # Avoid leaving an orphan single word behind for the next chunk
+        # unless it's genuinely the end of the text.
+        if chosen_end - i < 2 and window_end < n:
+            chosen_end = window_end
+
+        chunks.append(" ".join(words[i:chosen_end]))
+        i = chosen_end
+
+    return chunks
 
 
 def normalize_subtitle_pacing(
     segments: List[dict],
-    max_words: int = 8,
-    max_wps: float = 3.0,
-    min_duration: float = 0.8
+    max_words: int = 7,
+    target_wps: float = 2.5,
+    min_duration: float = 0.8,
+    min_gap: float = 0.08,
 ) -> List[dict]:
     """
-    Adjusts subtitle pacing by splitting segments that are too long or too fast to read.
-    Ensures a comfortable reading experience that matches normal human speech/reading rates.
+    Re-times subtitle segments so they're comfortable to read at normal
+    human reading speed, and never race ahead of the speech they belong to.
+
+    Two things happen here, and both matter:
+
+    1. Long lines are capped at `max_words` per cue, breaking on natural
+       punctuation where possible (same as before).
+    2. Each cue is given a duration based on `target_wps` (~150 words/min,
+       a normal comfortable reading pace) rather than just dividing the
+       original segment's time window evenly. Simply chopping a segment
+       into more pieces without changing its total duration doesn't
+       actually slow down the reading pace -- word count and time shrink
+       together, so words-per-second stays identical. If a translation
+       is longer than what the original segment's timestamps allow, this
+       borrows the natural pause before the *next* segment's speech
+       starts (never past it) to stretch the reading time -- the same
+       approach editing tools like Premiere use for auto-captions. Only
+       when there's no gap left to borrow does it fall back to
+       compressing the pace, which is logged so it's visible when a
+       translation is simply too verbose for the available speech time.
     """
     normalized = []
+    n = len(segments)
 
-    for seg in segments:
+    for idx, seg in enumerate(segments):
         start = float(seg.get("start", 0.0) or 0.0)
         end_raw = seg.get("end")
         end = float(end_raw) if end_raw is not None else start
@@ -492,45 +520,74 @@ def normalize_subtitle_pacing(
         if not text:
             continue
 
-        words = text.split()
-        word_count = len(words)
-
-        if word_count == 0:
-            continue
-
         if end <= start:
             end = start + min_duration
 
-        duration = end - start
-        wps = word_count / duration if duration > 0 else float('inf')
-
-        # Determine how many chunks we need to split this into
-        chunks_needed = 1
-        if word_count > max_words:
-            chunks_needed = max(chunks_needed, math.ceil(word_count / max_words))
-        if wps > max_wps and duration > 0:
-            chunks_needed = max(chunks_needed, math.ceil(wps / max_wps))
-
-        if chunks_needed == 1:
-            normalized.append(seg)
+        # The next segment's original start time is the hard ceiling this
+        # cue's chunks may stretch into -- we never want translated text
+        # to still be on screen once the next line is actually being said.
+        hard_ceiling = None
+        if idx + 1 < n:
+            try:
+                next_start_raw = segments[idx + 1].get("start")
+                next_start = float(next_start_raw) if next_start_raw is not None else None
+            except Exception:
+                next_start = None
+            if next_start is not None and next_start > start:
+                hard_ceiling = next_start - min_gap
         else:
-            chunk_texts = _split_text_intelligently(text, chunks_needed)
-            actual_chunks = len(chunk_texts)
+            # Last segment: there's no next cue to avoid colliding with, and
+            # this function doesn't know the video's total duration. Cap the
+            # borrowed extension to double the original slot so a very
+            # verbose final translation still compresses instead of
+            # potentially running past the end of the video.
+            hard_ceiling = start + max(end - start, min_duration) * 2
 
-            for i, chunk_text in enumerate(chunk_texts):
-                # Divide the time proportionally
-                chunk_start = start + (duration * i / actual_chunks)
-                chunk_end = start + (duration * (i + 1) / actual_chunks)
+        chunks = _split_into_word_chunks(text, max_words)
+        chunk_word_counts = [max(1, len(c.split())) for c in chunks]
+        ideal_durations = [max(min_duration, wc / target_wps) for wc in chunk_word_counts]
+        total_ideal = sum(ideal_durations)
 
-                # Prevent subtitles from flashing too quickly for the brain to register
-                if chunk_end - chunk_start < min_duration:
-                    chunk_end = chunk_start + min_duration
+        # Available window: start with the original segment window, then
+        # borrow from the gap before the next line only as much as needed
+        # (and never more than what's actually free).
+        available_end = end
+        if hard_ceiling is not None:
+            if hard_ceiling > available_end:
+                available_end = min(hard_ceiling, start + total_ideal)
+            else:
+                available_end = min(available_end, hard_ceiling)
 
-                normalized.append({
-                    "start": round(chunk_start, 3),
-                    "end": round(chunk_end, 3),
-                    "text": chunk_text.strip()
-                })
+        available_time = max(available_end - start, min_duration)
+
+        if total_ideal > available_time:
+            logger.info(
+                "Subtitle segment at %.2fs is too verbose for its available "
+                "speech window (%d words need ~%.1fs, only %.1fs available); "
+                "compressing reading pace to stay in sync.",
+                start, sum(chunk_word_counts), total_ideal, available_time,
+            )
+            scale = available_time / total_ideal
+        else:
+            scale = 1.0
+
+        cursor = start
+        for chunk_text, ideal in zip(chunks, ideal_durations):
+            duration = max(ideal * scale, 0.35)  # absolute floor: always visible long enough to register
+            chunk_start = cursor
+            chunk_end = chunk_start + duration
+
+            if hard_ceiling is not None:
+                chunk_end = min(chunk_end, hard_ceiling)
+                if chunk_end <= chunk_start:
+                    chunk_end = chunk_start + 0.35
+
+            normalized.append({
+                "start": round(chunk_start, 3),
+                "end": round(chunk_end, 3),
+                "text": chunk_text.strip(),
+            })
+            cursor = chunk_end
 
     return normalized
 
