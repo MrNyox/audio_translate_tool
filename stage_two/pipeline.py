@@ -1,6 +1,7 @@
 import json
 import logging
 import threading
+import re
 from pathlib import Path
 
 import config
@@ -74,6 +75,64 @@ def _render_subtitled_video(job_id: str, job_dir: Path, outputs: dict, translate
         # job just because rendering the captioned video didn't work.
         logger.warning("Job %s: subtitle burn-in skipped: %s", job_id, exc)
 
+def _sync_flat_translation_to_segments(translated_text: str, original_segments: list) -> list:
+    """
+    Distributes the high-quality flat translation (from translated.txt)
+    across the original timestamped segments proportionally based on
+    the original text's word count.
+    """
+    if not translated_text or not original_segments:
+        return []
+
+    # Tokenize translated text into words (ignoring all whitespace/newlines)
+    translated_words = re.findall(r'\S+', translated_text)
+    if not translated_words:
+        return []
+
+    # Calculate weights of original segments (word count)
+    original_weights = []
+    for seg in original_segments:
+        orig_text = str(seg.get("text", "")).strip()
+        words = len(re.findall(r'\S+', orig_text))
+        original_weights.append(max(1, words))  # avoid zero weight for silence/empty segments
+
+    total_orig_weight = sum(original_weights)
+    if total_orig_weight == 0:
+        total_orig_weight = 1
+
+    total_trans_words = len(translated_words)
+
+    synced_segments = []
+    trans_cursor = 0
+
+    for i, seg in enumerate(original_segments):
+        weight = original_weights[i]
+
+        # Calculate how many translated words this segment should get
+        target_words = (weight / total_orig_weight) * total_trans_words
+
+        # Determine end index for this segment
+        trans_end_idx = round(trans_cursor + target_words)
+
+        # Ensure the last segment captures all remaining words
+        if i == len(original_segments) - 1:
+            trans_end_idx = total_trans_words
+
+        # Safety bounds
+        trans_end_idx = max(trans_cursor, min(trans_end_idx, total_trans_words))
+
+        assigned_words = translated_words[trans_cursor:trans_end_idx]
+        assigned_text = " ".join(assigned_words)
+
+        synced_segments.append({
+            "start": seg.get("start"),
+            "end": seg.get("end"),
+            "text": assigned_text
+        })
+
+        trans_cursor = trans_end_idx
+
+    return synced_segments
 
 def process_translation(job_id: str, target_language: str) -> None:
     try:
@@ -106,13 +165,21 @@ def process_translation(job_id: str, target_language: str) -> None:
 
         if segments:
             job_store.update_job(
-                job_id, step="Translating timestamped segments", progress=65
+                job_id, step="Mapping high-quality translation to timestamps", progress=65
             )
 
-            translated_segments = translator.translate_segments(segments, target_language)
+            # Map the high-quality flat translation to the original timestamps
+            if translated_text.strip():
+                translated_segments = _sync_flat_translation_to_segments(translated_text, segments)
+            else:
+                # Fallback to the old method if the flat translation is somehow empty
+                logger.warning("Job %s: Flat translation empty, falling back to segment translation.", job_id)
+                translated_segments = translator.translate_segments(segments, target_language)
 
-            # --- NEW: Normalize subtitle pacing for comfortable reading ---
-            # Splits dense segments so they don't exceed normal reading speeds
+            # --- Normalize subtitle pacing for comfortable reading ---
+            # THIS IS THE MAGIC: It takes the newly assigned text, checks its length,
+            # and automatically stretches the timestamps into the next pauses so the
+            # viewer has time to read the longer/shorter translated text!
             translated_segments = captions.normalize_subtitle_pacing(translated_segments)
             # --------------------------------------------------------------
 
