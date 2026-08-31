@@ -176,11 +176,11 @@ def process_translation(job_id: str, target_language: str) -> None:
                 logger.warning("Job %s: Flat translation empty, falling back to segment translation.", job_id)
                 translated_segments = translator.translate_segments(segments, target_language)
 
-            # --- Normalize subtitle pacing for comfortable reading ---
-            # THIS IS THE MAGIC: It takes the newly assigned text, checks its length,
-            # and automatically stretches the timestamps into the next pauses so the
-            # viewer has time to read the longer/shorter translated text!
-            translated_segments = captions.normalize_subtitle_pacing(translated_segments)
+            # --- BYPASSING normalize_subtitle_pacing ---
+            # We intentionally skip the pacing normalization here.
+            # By using the original ASR timestamps directly, we respect the
+            # natural speech pacing, exact start/stop times, and actual pauses
+            # in the audio without the algorithm forcing artificial delays.
             # --------------------------------------------------------------
 
             ts_translated_path = job_dir / config.TS_TRANSLATED_FILENAME
