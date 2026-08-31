@@ -1,9 +1,11 @@
 """Subtitle rendering.
+
 Turns timestamped, translated segments (ts_translated.json) into a styled
 .ass subtitle file, then burns it into the muted video from Stage One using
 ffmpeg's `ass` filter (libass). Style target: bold, high-contrast "modern
 short-form" captions -- white fill with a blue accent outline, similar to
 the on-screen captions common on TikTok/Reels/Shorts.
+
 TTS dubbing is intentionally out of scope here -- this module only ever
 produces a video with hard-coded (burned-in) subtitle text over the
 original visual track.
@@ -21,9 +23,12 @@ import config
 from stage_one import media
 
 logger = logging.getLogger(__name__)
+
 _FONT_FAMILY_CACHE: Optional[str] = None
 
+
 # --- Online caption font ----------------------------------------------------
+
 # Cairo is a single family purpose-built for bilingual Arabic/Latin UI text
 # (it extends Titillium Web's Latin design with a matching Arabic Kufi-based
 # design), so one font file covers both scripts cleanly with matching
@@ -319,6 +324,7 @@ def _segment_value(seg: dict, *keys, default=None):
 
     return default
 
+
 def video_dimensions(probe: dict) -> Tuple[int, int]:
     """Best-effort (width, height) from an ffprobe result. Falls back to a
     common 720p frame if nothing usable is found."""
@@ -466,17 +472,46 @@ def _escape_ffmpeg_filter_path(path: Path) -> str:
     escaped = escaped.replace("'", "\\'")
     return escaped
 
+
 # Punctuation that makes a natural place to break a line (English + Arabic).
 _STRONG_BREAK_CHARS = ".!?؟!،؛:,"
 
 
-def _split_into_word_chunks(text: str, max_words: int) -> list:
-    """Split text into chunks of at most `max_words` words, preferring to
-    end a chunk on a punctuation mark near the word-count limit so breaks
-    land on natural clause/sentence boundaries instead of mid-phrase.
+def _visible_char_count(text: str) -> int:
     """
+    Count visible reading load.
+
+    For Arabic, character count is usually more stable than word count because
+    Arabic words can contain attached clitics/prepositions and vary a lot in
+    length. Spaces and punctuation are not counted as reading load.
+    """
+    cleaned = "".join(
+        ch
+        for ch in str(text or "")
+        if not ch.isspace() and ch not in _STRONG_BREAK_CHARS
+    )
+    return max(1, len(cleaned))
+
+
+def _split_into_word_chunks(text: str, max_words: int = 7, max_chars: int = 42) -> list:
+    """
+    Split text into caption chunks.
+
+    Rules:
+    - Never split inside a word.
+    - Prefer natural punctuation breaks.
+    - Respect both max_words and max_chars.
+    - Works for Arabic and Latin text.
+    """
+    text = " ".join(str(text or "").split())
     words = text.split()
-    if len(words) <= max_words:
+    if not words:
+        return []
+
+    max_words = max(1, int(max_words or 7))
+    max_chars = max(8, int(max_chars or 42))
+
+    if len(words) <= max_words and len(text) <= max_chars:
         return [text]
 
     chunks = []
@@ -484,28 +519,102 @@ def _split_into_word_chunks(text: str, max_words: int) -> list:
     n = len(words)
 
     while i < n:
-        window_end = min(i + max_words, n)
+        # Hard word limit.
+        word_limit_end = min(i + max_words, n)
+
+        # Apply character limit inside the word limit.
+        char_end = i
+        current = ""
+
+        for j in range(i, word_limit_end):
+            candidate = words[j] if not current else current + " " + words[j]
+
+            # If this word would make the line too long, stop here,
+            # unless we have no words yet, because we never split a word.
+            if len(candidate) > max_chars and current:
+                break
+
+            current = candidate
+            char_end = j + 1
+
+        # Always take at least one word.
+        window_end = max(i + 1, char_end)
 
         if window_end >= n:
             chosen_end = n
         else:
-            # Scan backward from the window edge for a word ending in
-            # punctuation, so we don't cut a sentence off arbitrarily.
             chosen_end = window_end
-            for j in range(window_end, i + 1, -1):
+
+            # Prefer ending near the window edge on punctuation.
+            # Scan a few words backward so we do not create tiny awkward chunks.
+            scan_start = window_end
+            scan_stop = max(i + 1, window_end - 3)
+
+            for j in range(scan_start, scan_stop, -1):
                 if words[j - 1] and words[j - 1][-1] in _STRONG_BREAK_CHARS:
                     chosen_end = j
                     break
 
-        # Avoid leaving an orphan single word behind for the next chunk
-        # unless it's genuinely the end of the text.
-        if chosen_end - i < 2 and window_end < n:
-            chosen_end = window_end
+            # Avoid creating a one-word chunk if the full window was larger,
+            # unless this is truly the end of the text.
+            if chosen_end - i < 2 and window_end - i >= 2:
+                chosen_end = window_end
 
         chunks.append(" ".join(words[i:chosen_end]))
         i = chosen_end
 
     return chunks
+
+
+def _allocate_chunk_durations(
+    weights: List[int],
+    total_time: float,
+    min_duration: float = 0.35,
+) -> List[float]:
+    """
+    Allocate a total time window across chunks proportionally to reading load.
+
+    This keeps the whole caption group synchronized with the speech window,
+    while giving longer chunks more time than shorter chunks.
+    """
+    if not weights:
+        return []
+
+    total_time = max(0.0, float(total_time))
+    n = len(weights)
+
+    if total_time <= 0:
+        return [0.0 for _ in weights]
+
+    total_weight = float(sum(weights)) or float(n)
+    durations = [total_time * (float(weight) / total_weight) for weight in weights]
+
+    # If there is not enough time to give every cue the soft minimum,
+    # preserve sync instead of forcing the minimum and running into speech.
+    if total_time < min_duration * n:
+        return durations
+
+    # Enforce a soft minimum without changing the total duration.
+    for _ in range(n):
+        under = [idx for idx, duration in enumerate(durations) if duration < min_duration]
+        if not under:
+            break
+
+        need = sum(min_duration - durations[idx] for idx in under)
+
+        for idx in under:
+            durations[idx] = min_duration
+
+        over = [idx for idx, duration in enumerate(durations) if duration > min_duration]
+        if need <= 0 or not over:
+            break
+
+        over_weight = float(sum(weights[idx] for idx in over)) or float(len(over))
+
+        for idx in over:
+            durations[idx] -= need * (float(weights[idx]) / over_weight)
+
+    return [max(0.0, duration) for duration in durations]
 
 
 def normalize_subtitle_pacing(
@@ -516,106 +625,172 @@ def normalize_subtitle_pacing(
     min_gap: float = 0.08,
 ) -> List[dict]:
     """
-    Re-times subtitle segments so they're comfortable to read at normal
-    human reading speed, and never race ahead of the speech they belong to.
+    Re-time subtitle segments using a speech-aware, reading-speed-aware model.
 
-    Two things happen here, and both matter:
-
-    1. Long lines are capped at `max_words` per cue, breaking on natural
-       punctuation where possible (same as before).
-    2. Each cue is given a duration based on `target_wps` (~150 words/min,
-       a normal comfortable reading pace) rather than just dividing the
-       original segment's time window evenly. Simply chopping a segment
-       into more pieces without changing its total duration doesn't
-       actually slow down the reading pace -- word count and time shrink
-       together, so words-per-second stays identical. If a translation
-       is longer than what the original segment's timestamps allow, this
-       borrows the natural pause before the *next* segment's speech
-       starts (never past it) to stretch the reading time -- the same
-       approach editing tools like Premiere use for auto-captions. Only
-       when there's no gap left to borrow does it fall back to
-       compressing the pace, which is logged so it's visible when a
-       translation is simply too verbose for the available speech time.
+    This version is better for Arabic because:
+    - It uses characters per second instead of only words per second.
+    - It preserves the original speech window when possible.
+    - It borrows only from pauses before the next speech starts.
+    - It compresses only when the translated text is too long for the window.
+    - It distributes time proportionally across chunks.
     """
+    # Arabic subtitle reading speed.
+    #
+    # If SUBTITLE_TARGET_CPS is not configured, derive a reasonable CPS from WPS.
+    # Arabic words are often around 4-6 visible characters, so 2.5 WPS roughly
+    # becomes 12.5 CPS. For Arabic, 12-14 CPS is usually a comfortable range.
+    target_cps = float(getattr(config, "SUBTITLE_TARGET_CPS", 0.0) or 0.0)
+    if target_cps <= 0:
+        target_cps = max(10.0, float(target_wps) * 5.0)
+
+    max_chars = int(getattr(config, "SUBTITLE_MAX_CHARS", 42) or 42)
+
+    # Optional anti-linger control.
+    #
+    # 0.0 means: keep the caption aligned with the original speech window as much
+    # as possible. This is usually best when the complaint is "subtitles feel
+    # inconsistent with speech".
+    #
+    # If captions sometimes stay visible too long during slow speech or silence,
+    # set SUBTITLE_MAX_STRETCH to something like 1.8, 2.0, or 2.5.
+    max_stretch = float(getattr(config, "SUBTITLE_MAX_STRETCH", 0.0) or 0.0)
+
     normalized = []
     n = len(segments)
 
     for idx, seg in enumerate(segments):
-        start = float(seg.get("start", 0.0) or 0.0)
-        end_raw = seg.get("end")
-        end = float(end_raw) if end_raw is not None else start
-        text = str(seg.get("text", "")).strip()
-
+        text = str(_segment_value(seg, "text", default="") or "").strip()
         if not text:
             continue
+
+        start_raw = _segment_value(seg, "start", "start_time", default=0.0)
+        end_raw = _segment_value(seg, "end", "end_time", default=None)
+
+        try:
+            start = float(start_raw or 0.0)
+        except Exception:
+            start = 0.0
+
+        try:
+            end = float(end_raw) if end_raw is not None else start
+        except Exception:
+            end = start
 
         if end <= start:
             end = start + min_duration
 
-        # The next segment's original start time is the hard ceiling this
-        # cue's chunks may stretch into -- we never want translated text
-        # to still be on screen once the next line is actually being said.
+        # Hard ceiling: this cue must not run into the next spoken segment.
         hard_ceiling = None
+
         if idx + 1 < n:
+            next_start_raw = _segment_value(
+                segments[idx + 1],
+                "start",
+                "start_time",
+                default=None,
+            )
+
             try:
-                next_start_raw = segments[idx + 1].get("start")
                 next_start = float(next_start_raw) if next_start_raw is not None else None
             except Exception:
                 next_start = None
+
             if next_start is not None and next_start > start:
                 hard_ceiling = next_start - min_gap
+            else:
+                hard_ceiling = end
         else:
-            # Last segment: there's no next cue to avoid colliding with, and
-            # this function doesn't know the video's total duration. Cap the
-            # borrowed extension to double the original slot so a very
-            # verbose final translation still compresses instead of
-            # potentially running past the end of the video.
-            hard_ceiling = start + max(end - start, min_duration) * 2
+            # Last segment: this module does not know the video duration here.
+            # Allow some breathing room, but do not create an unbounded tail.
+            hard_ceiling = start + max(end - start, min_duration) * 2.0 + 1.0
 
-        chunks = _split_into_word_chunks(text, max_words)
-        chunk_word_counts = [max(1, len(c.split())) for c in chunks]
-        ideal_durations = [max(min_duration, wc / target_wps) for wc in chunk_word_counts]
+        chunks = _split_into_word_chunks(
+            text,
+            max_words=max_words,
+            max_chars=max_chars,
+        )
+        if not chunks:
+            continue
+
+        weights = [_visible_char_count(chunk) for chunk in chunks]
+
+        # Ideal reading duration per chunk if we were not constrained by speech.
+        ideal_durations = [
+            max(min_duration, weight / target_cps)
+            for weight in weights
+        ]
         total_ideal = sum(ideal_durations)
 
-        # Available window: start with the original segment window, then
-        # borrow from the gap before the next line only as much as needed
-        # (and never more than what's actually free).
-        available_end = end
+        # The original speech end is the primary anchor.
+        #
+        # Important fix compared to the old version:
+        # if the translated text is short, we do NOT shrink the cue down to
+        # the ideal reading time only. We keep it with the actual speech window.
+        speech_end = max(end, start + min_duration)
+        target_end = speech_end
+
+        # If the translated text needs more reading time, try to extend into
+        # the pause before the next segment, but never past the hard ceiling.
+        desired_end = start + total_ideal
+        if desired_end > target_end:
+            target_end = desired_end
+
         if hard_ceiling is not None:
-            if hard_ceiling > available_end:
-                available_end = min(hard_ceiling, start + total_ideal)
-            else:
-                available_end = min(available_end, hard_ceiling)
+            target_end = min(target_end, hard_ceiling)
 
-        available_time = max(available_end - start, min_duration)
+        # Optional: avoid captions lingering too long if the speech window is
+        # much longer than the reading requirement.
+        if max_stretch > 0:
+            stretch_end = start + max(total_ideal * max_stretch, min_duration)
+            target_end = min(target_end, stretch_end)
 
-        if total_ideal > available_time:
+        # If the next cue is extremely close, reduce the absolute floor so we
+        # do not intentionally overlap speech.
+        floor = 0.35
+        if hard_ceiling is not None:
+            floor = min(floor, max(hard_ceiling - start, 0.12))
+
+        total_time = max(target_end - start, floor)
+
+        if hard_ceiling is not None:
+            total_time = min(total_time, max(hard_ceiling - start, floor))
+
+        if total_ideal > total_time:
             logger.info(
-                "Subtitle segment at %.2fs is too verbose for its available "
-                "speech window (%d words need ~%.1fs, only %.1fs available); "
+                "Subtitle segment at %.2fs is too verbose for its available window "
+                "(%d visible chars need ~%.2fs at %.1f CPS, only %.2fs available); "
                 "compressing reading pace to stay in sync.",
-                start, sum(chunk_word_counts), total_ideal, available_time,
+                start,
+                sum(weights),
+                total_ideal,
+                target_cps,
+                total_time,
             )
-            scale = available_time / total_ideal
-        else:
-            scale = 1.0
+
+        durations = _allocate_chunk_durations(
+            weights,
+            total_time,
+            min_duration=min(0.35, floor),
+        )
 
         cursor = start
-        for chunk_text, ideal in zip(chunks, ideal_durations):
-            duration = max(ideal * scale, 0.35)  # absolute floor: always visible long enough to register
+
+        for chunk_text, duration in zip(chunks, durations):
             chunk_start = cursor
             chunk_end = chunk_start + duration
 
-            if hard_ceiling is not None:
-                chunk_end = min(chunk_end, hard_ceiling)
-                if chunk_end <= chunk_start:
-                    chunk_end = chunk_start + 0.35
+            if hard_ceiling is not None and chunk_end > hard_ceiling:
+                chunk_end = hard_ceiling
+
+            if chunk_end <= chunk_start:
+                chunk_end = chunk_start + max(0.12, floor)
 
             normalized.append({
                 "start": round(chunk_start, 3),
                 "end": round(chunk_end, 3),
                 "text": chunk_text.strip(),
             })
+
             cursor = chunk_end
 
     return normalized
