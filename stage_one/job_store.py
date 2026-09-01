@@ -29,7 +29,11 @@ def create_job(original_filename: str) -> str:
         "outputs": {
             "audio_path": None,
             "transcript_path": None,
+            "ts_transcript_path": None,
             "video_path": None,
+            "translated_path": None,
+            "ts_translated_path": None,
+            "subtitled_video_path": None,
         },
     }
 

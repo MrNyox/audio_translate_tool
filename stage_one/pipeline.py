@@ -1,7 +1,11 @@
+import json
+import logging
 from pathlib import Path
 
 import config
 from stage_one import asr, job_store, media
+
+logger = logging.getLogger(__name__)
 
 
 def _job_dir(job_id: str) -> Path:
@@ -101,7 +105,13 @@ def process_job(job_id: str) -> None:
             progress=60,
         )
 
-        transcript_text = asr.transcribe_file(audio_path)
+        # Single inference call: gives us both the flat transcript text
+        # (unchanged transcript.txt behavior) and, when the forced aligner
+        # is available, word-level timestamps grouped into caption-sized
+        # segments for ts_transcript.json.
+        transcription = asr.transcribe_file_with_timestamps(audio_path)
+        transcript_text = transcription.get("text", "")
+        segments = transcription.get("segments", [])
 
         job_store.update_job(
             job_id,
@@ -116,11 +126,19 @@ def process_job(job_id: str) -> None:
             encoding="utf-8",
         )
 
+        # New, additive: same transcript, with per-segment timestamps.
+        ts_transcript_path = job_dir / config.TS_TRANSCRIPT_FILENAME
+        ts_transcript_path.write_text(
+            json.dumps({"segments": segments}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
         job_store.update_job(
             job_id,
             outputs={
                 "audio_path": str(audio_path),
                 "transcript_path": str(transcript_path),
+                "ts_transcript_path": str(ts_transcript_path),
                 "video_path": str(video_path) if video_path else None,
             },
         )
@@ -131,8 +149,19 @@ def process_job(job_id: str) -> None:
         if not transcript_path.is_file():
             raise RuntimeError("Expected transcript output is missing.")
 
+        if not ts_transcript_path.is_file():
+            raise RuntimeError("Expected timestamped transcript output is missing.")
+
         if video_present and (not video_path or not video_path.is_file()):
             raise RuntimeError("Expected muted video output is missing.")
+
+        if not segments:
+            logger.warning(
+                "Job %s: no timestamped segments produced (forced aligner "
+                "unavailable) -- ts_transcript.json will be empty and "
+                "downstream subtitle burn-in will be skipped.",
+                job_id,
+            )
 
         job_store.update_job(
             job_id,

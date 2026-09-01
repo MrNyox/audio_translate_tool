@@ -70,6 +70,9 @@ def _public_job(job):
             "transcript_url": output_url("transcript"),
             "video_url": output_url("video"),
             "translated_url": output_url("translated"),
+            "ts_transcript_url": output_url("ts_transcript"),
+            "ts_translated_url": output_url("ts_translated"),
+            "subtitled_video_url": output_url("subtitled_video"),
         },
     }
 
@@ -137,6 +140,7 @@ def health():
         {
             "status": "online",
             "model_loaded": asr.is_model_loaded(),
+            "aligner_loaded": asr.is_aligner_loaded(),
             "ffmpeg_available": media.ffmpeg_available(),
         }
     )
@@ -243,6 +247,14 @@ def download_video(job_id):
         mimetype=None,
     )
 
+@bp.get("/api/jobs/<job_id>/outputs/ts_transcript")
+def download_ts_transcript(job_id):
+    return _send_exact_file(
+        job_id,
+        config.TS_TRANSCRIPT_FILENAME,
+        mimetype="application/json",
+    )
+
 @bp.post("/api/jobs/<job_id>/translate")
 def translate_job(job_id):
     if not JOB_ID_RE.fullmatch(job_id):
@@ -284,4 +296,20 @@ def download_translated(job_id):
         job_id,
         config.TRANSLATED_FILENAME,
         mimetype="text/plain; charset=utf-8",
+    )
+
+@bp.get("/api/jobs/<job_id>/outputs/ts_translated")
+def download_ts_translated(job_id):
+    return _send_exact_file(
+        job_id,
+        config.TS_TRANSLATED_FILENAME,
+        mimetype="application/json",
+    )
+
+@bp.get("/api/jobs/<job_id>/outputs/subtitled_video")
+def download_subtitled_video(job_id):
+    return _send_glob_file(
+        job_id,
+        config.SUBTITLED_VIDEO_PREFIX,
+        mimetype=None,
     )

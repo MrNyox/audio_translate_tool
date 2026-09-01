@@ -9,10 +9,30 @@ JOB_OUTPUT_ROOT = Path(
 ).resolve()
 
 # Qwen3-ASR model id or local folder path.
+_LOCAL_ASR_DIR = BASE_DIR / "models" / "Qwen3-ASR-1.7B"
 MODEL_ID = (
     os.getenv("QWEN3_ASR_MODEL")
-    or os.getenv("QWEN3_ASR")  # ← legacy name
-    or str(BASE_DIR / "models" / "Qwen3-ASR-1.7B")
+    or os.getenv("QWEN3_ASR")  # legacy name
+    or (str(_LOCAL_ASR_DIR) if _LOCAL_ASR_DIR.is_dir() else "Qwen/Qwen3-ASR-1.7B")
+)
+
+# Qwen3-ForcedAligner model id or local folder path. Loaded alongside the ASR
+# model so `.transcribe(..., return_time_stamps=True)` can return word-level
+# timestamps. If this fails to load, ASR still works -- we just fall back to
+# plain (un-timestamped) transcription and skip the ts_*/subtitle outputs.
+#
+# Resolution order: explicit env var > a local `models/Qwen3-ForcedAligner-0.6B`
+# folder if you've already downloaded it > the public Hugging Face Hub repo id
+# (auto-downloaded on first use, given internet access -- e.g. on Colab).
+# We deliberately do NOT default straight to the local folder path the way
+# MODEL_ID historically did: if that folder doesn't exist, from_pretrained()
+# fails immediately (it's not a valid HF repo id), and the app was silently
+# falling back to timestamp-less transcription with no visible error.
+_LOCAL_ALIGNER_DIR = BASE_DIR / "models" / "Qwen3-ForcedAligner-0.6B"
+FORCED_ALIGNER_MODEL_ID = os.getenv("QWEN3_FORCED_ALIGNER_MODEL") or (
+    str(_LOCAL_ALIGNER_DIR)
+    if _LOCAL_ALIGNER_DIR.is_dir()
+    else "Qwen/Qwen3-ForcedAligner-0.6B"
 )
 
 # Device selection: auto, cpu, cuda, cuda:0, mps.
@@ -55,10 +75,17 @@ ALLOWED_EXTENSIONS = {
 
 # Controlled output file names inside each job folder.
 ASR_AUDIO_FILENAME = "audio.wav"
-TRANSCRIPT_FILENAME = "transcript.txt"
+TRANSCRIPT_FILENAME = "transcript.txt"          # unchanged: flat transcript text
 MUTED_VIDEO_PREFIX = "video_no_audio"
 SOURCE_PREFIX = "source"
-TRANSLATED_FILENAME = "translated.txt"
+TRANSLATED_FILENAME = "translated.txt"          # unchanged: flat translated text
+
+# New: timestamped sibling files. Same content, plus per-segment start/end.
+TS_TRANSCRIPT_FILENAME = "ts_transcript.json"
+TS_TRANSLATED_FILENAME = "ts_translated.json"
+
+# New: subtitle-burned video output.
+SUBTITLED_VIDEO_PREFIX = "video_subtitled"
 
 TRANSLATION_MODEL_ID = os.getenv(
     "TRANSLATION_MODEL_ID",
@@ -66,3 +93,41 @@ TRANSLATION_MODEL_ID = os.getenv(
 )
 TRANSLATION_MAX_TOKENS = int(os.getenv("TRANSLATION_MAX_TOKENS", "2048"))
 TRANSLATION_CHUNK_SIZE = int(os.getenv("TRANSLATION_CHUNK_SIZE", "4096"))
+
+# --- Caption segmentation ------------------------------------------------
+# Word-level timestamps from the forced aligner are grouped into
+# subtitle-sized cues using these thresholds. A new cue starts whenever any
+# one of them is exceeded, or whenever the previous word ended a sentence.
+CAPTION_MAX_WORDS = int(os.getenv("CAPTION_MAX_WORDS", "8"))
+CAPTION_MAX_CHARS = int(os.getenv("CAPTION_MAX_CHARS", "42"))
+CAPTION_MAX_DURATION = float(os.getenv("CAPTION_MAX_DURATION", "4.0"))
+CAPTION_MAX_GAP = float(os.getenv("CAPTION_MAX_GAP", "0.6"))
+
+# --- Subtitle burn-in styling --------------------------------------------
+# "Modern short-form captions" look: bold, white fill, blue accent outline.
+# Drop a bold/heavy .ttf (e.g. Montserrat-ExtraBold, Poppins-Bold) into
+# static/fonts/ and it will be picked up automatically via `fontsdir`; if
+# nothing is there, libass falls back to whatever font by this name (or a
+# close match) is installed on the system.
+SUBTITLE_FONT_NAME = os.getenv("SUBTITLE_FONT_NAME", "IBM Plex Sans Arabic")
+
+# Changed from static/fonts to models to load the font locally as requested
+SUBTITLE_FONT_DIR = str(BASE_DIR / "models")
+
+# If true, captions.py downloads a clean bilingual Arabic/Latin font (Cairo)
+# from Google Fonts on first use and prefers it over SUBTITLE_FONT_NAME /
+# the local SUBTITLE_FONT_DIR scan. Cached to disk after the first fetch.
+# Falls back automatically to the bundled/local font if offline.
+SUBTITLE_USE_ONLINE_FONT = os.getenv("SUBTITLE_USE_ONLINE_FONT", "1") not in (
+    "0", "false", "False",
+)
+
+SUBTITLE_FONT_SIZE_RATIO = float(os.getenv("SUBTITLE_FONT_SIZE_RATIO", "0.045"))
+SUBTITLE_MARGIN_V_RATIO = float(os.getenv("SUBTITLE_MARGIN_V_RATIO", "0.08"))
+
+# ASS colours use &HAABBGGRR (alpha, blue, green, red). Alpha 00 = opaque.
+SUBTITLE_PRIMARY_COLOR = os.getenv("SUBTITLE_PRIMARY_COLOR", "&H00FFFFFF") # white fill
+SUBTITLE_OUTLINE_COLOR = os.getenv("SUBTITLE_OUTLINE_COLOR", "&H00FF802F") # #2F80FF blue accent
+SUBTITLE_BACK_COLOR = os.getenv("SUBTITLE_BACK_COLOR", "&H80000000") # soft black shadow
+SUBTITLE_OUTLINE_WIDTH = float(os.getenv("SUBTITLE_OUTLINE_WIDTH", "3.2"))
+SUBTITLE_SHADOW = float(os.getenv("SUBTITLE_SHADOW", "0.8"))

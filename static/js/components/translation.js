@@ -32,6 +32,7 @@ async function onTranslate() {
 
   updateState("translationStatus", "translating");
   ui.setTranslationProgress(true);
+  ui.hideSubtitledVideo();
 
   try {
     await api.triggerTranslation(state.jobId, targetLang);
@@ -76,7 +77,16 @@ async function pollTranslationJob() {
       updateState("translationStatus", "completed");
       ui.setTranslationProgress(false);
       ui.showTranslatedOutput(job.outputs.translated_url);
-      ui.toast("Translation completed successfully.", "success");
+
+      if (job.outputs?.subtitled_video_url) {
+        ui.showSubtitledVideo(job.outputs.subtitled_video_url);
+        ui.toast("Translation completed — subtitled video is ready.", "success");
+      } else {
+        // Timestamps weren't available for this job (e.g. the forced
+        // aligner wasn't loaded), so no subtitled video was rendered.
+        // The flat translated.txt output is still there either way.
+        ui.toast("Translation completed successfully.", "success");
+      }
       return;
     }
 

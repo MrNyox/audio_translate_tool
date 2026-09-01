@@ -49,6 +49,15 @@ async function checkHealth() {
         "danger"
       );
     }
+
+    if (!health.aligner_loaded) {
+      ui.toast(
+        "Word-level timestamps aren't available this session, so subtitles " +
+          "won't be generated (transcript/translation still work normally). " +
+          "Check the server logs for details.",
+        "info"
+      );
+    }
   } catch (error) {
     updateState("connected", false);
     ui.setConnectionStatus(false);

@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import subprocess
 from pathlib import Path
@@ -13,6 +14,72 @@ class MediaError(RuntimeError):
 
 def ffmpeg_available() -> bool:
     return bool(FFMPEG_PATH and FFPROBE_PATH)
+
+
+_ARABIC_RENDER_LIBS = ("libass", "libfribidi", "libharfbuzz", "libfontconfig", "libfreetype")
+_arabic_support_checked = False
+
+
+def check_arabic_rendering_support() -> None:
+    """
+    Log a loud, explicit warning if the installed ffmpeg's `ass` filter was
+    NOT built with the libraries required to correctly shape/join Arabic
+    (and other RTL/complex) script glyphs:
+
+      - libass        : renders .ass subtitles at all
+      - libfribidi    : bidi algorithm (right-to-left ordering)
+      - libharfbuzz   : complex-script glyph shaping (letter joining)
+      - libfontconfig : lets libass resolve/load fonts by family name
+      - libfreetype   : rasterizes the glyph outlines
+
+    Without fribidi/harfbuzz specifically, Arabic text will often render as
+    disconnected, wrongly-ordered, or completely missing glyphs instead of
+    properly joined right-to-left script -- which looks identical to "the
+    subtitles just aren't there." This only *detects and reports* the
+    problem (once, cached); it can't fix a broken ffmpeg build, but a clear
+    log line is far better than mysteriously blank captions.
+    """
+    global _arabic_support_checked
+    if _arabic_support_checked or not FFMPEG_PATH:
+        return
+    _arabic_support_checked = True
+
+    try:
+        completed = subprocess.run(
+            [FFMPEG_PATH, "-hide_banner", "-version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        config_output = (completed.stdout or "") + (completed.stderr or "")
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Could not run 'ffmpeg -version' to verify Arabic/RTL subtitle "
+            "rendering support."
+        )
+        return
+
+    missing = [
+        lib for lib in _ARABIC_RENDER_LIBS
+        if f"--enable-{lib}" not in config_output
+    ]
+
+    if missing:
+        logging.getLogger(__name__).warning(
+            "This ffmpeg build is missing: %s. Arabic (and other RTL/complex "
+            "script) subtitles may render blank, disconnected, or in the "
+            "wrong order even though the .ass file itself is correct. "
+            "Install a full ffmpeg build (on Debian/Ubuntu: "
+            "'apt-get install ffmpeg', which normally already includes "
+            "these; on conda-forge use the 'ffmpeg' feedstock, not a "
+            "minimal static binary) to fix this.",
+            ", ".join(missing),
+        )
+    else:
+        logging.getLogger(__name__).info(
+            "ffmpeg build has full Arabic/RTL subtitle rendering support "
+            "(%s all present).", ", ".join(_ARABIC_RENDER_LIBS)
+        )
 
 
 def _require_ffmpeg() -> None:
