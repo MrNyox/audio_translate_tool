@@ -6,12 +6,12 @@ here is the boring tutorial part if you're still reading to this point.
 
 ***
 
-# 🎙️ Audio Translate Tool
+#  Audio Translate Tool
 
-## 📖 Description
+##  Description
 The **Audio Translate Tool** is a locally hosted utility designed for dubbing and translating videos using Alibaba's Qwen language models. Built around a Flask web interface, this tool leverages state-of-the-art speech recognition (ASR) capabilities to process audio and video files, making it a powerful utility for translation and dubbing workflows.
 
-## ⚙️ Requirements
+##  Requirements
 - **Python**: Version 3.8 or higher.
 - **System Dependencies**: `FFmpeg` (essential for video/audio processing).
 - **Python Libraries** (from `requirements.txt`):
@@ -23,14 +23,14 @@ The **Audio Translate Tool** is a locally hosted utility designed for dubbing an
   - `huggingface_hub>=0.24.0`
   - `bitsandbytes>=0.43.0` & `fonttools>=4.50.0`
 
-## 🤖 Models Used
+##  Models Used
 - **Qwen-ASR (Qwen Audio Speech Recognition)**: The primary model used for transcribing and processing audio. It is an open-source model series provided by the Alibaba Qwen Team [[3]]. The `qwen-asr` PyPI package handles the integration and automatic fetching of the model weights via the Hugging Face Hub [[1]].
 
 ---
 
-## 🚀 Setup & Installation Guides
+##  Setup & Installation Guides
 
-### 🪟 Windows Setup Guide
+###  Windows Setup Guide
 
 1. **Clone the repository**:
    ```bash
@@ -69,7 +69,7 @@ The **Audio Translate Tool** is a locally hosted utility designed for dubbing an
 
 ---
 
-### 🐧 Linux Setup Guide
+###  Linux Setup Guide
 
 1. **Install System Dependencies**:
    You will need `ffmpeg` for media processing and some build tools to compile the requirements:
@@ -114,7 +114,7 @@ The **Audio Translate Tool** is a locally hosted utility designed for dubbing an
 
 ---
 
-## 🏃 How to Launch (After Downloading Requirements)
+## How to Launch (After Downloading Requirements)
 
 Once you have completed the setup steps above for your respective OS and the requirements are installed, launching the tool is straightforward:
 
